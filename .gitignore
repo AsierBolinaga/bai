@@ -1,0 +1,22 @@
+/venv
+history/
+models/
+gpt4all/
+
+# Python
+__pycache__/
+*.py[cod]
+*.log
+
+# Entorno virtual
+.venv/
+
+# Docker
+data/
+*.zip
+.env
+
+# VSCode/IDE
+.vscode/
+.idea/
+*.swp

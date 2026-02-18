@@ -1,0 +1,4 @@
+# Configuración del motor LLM offline por defecto
+motor_offline: llama_cpp
+modelo: mistral-7b-instruct-v0.1.Q4_0
+model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
