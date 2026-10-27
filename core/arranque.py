@@ -51,8 +51,10 @@ def preparar_arranque(argv=None, salida=print):
             if info["loopback"] is False:
                 salida("[B.A.I] ATENCIÓN: no se pudo activar la interfaz loopback dentro del namespace: los "
                        "servicios locales por TCP/UDP (p. ej. Ollama en localhost) no funcionarán en esta sesión.")
-            if info["mapa_uid_gid"] is False:
-                salida("[B.A.I] Nota: el mapa de uid/gid no se aplicó: los ficheros pueden aparecer como 'nobody'.")
+            if info["mapa_uid"] is False:
+                salida("[B.A.I] Nota: el mapa de uid no se aplicó: los ficheros pueden aparecer como 'nobody'.")
+            if info["mapa_gid"] is False:
+                salida("[B.A.I] Nota: el mapa de gid no se aplicó (getgid() devuelve 65534).")
             for incidencia in info["incidencias"]:
                 salida(f"[B.A.I]   - {incidencia}")
         else:

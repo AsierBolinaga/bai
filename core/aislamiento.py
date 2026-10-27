@@ -34,7 +34,9 @@ MARCA_ENV = "BAI_AISLAMIENTO_PROCESO"     # heredada por subprocesos
 _SIOCGIFFLAGS, _SIOCSIFFLAGS = 0x8913, 0x8914
 _IFF_UP, _IFF_RUNNING = 0x1, 0x40
 
-_estado = {"nivel": None, "detalle": "", "loopback": None, "mapa_uid_gid": None, "incidencias": []}
+_ESTADO_INICIAL = {"nivel": None, "detalle": "", "loopback": None, "setgroups": None, "mapa_uid": None,
+                   "mapa_gid": None, "mapa_uid_gid": None, "incidencias": []}
+_estado = dict(_ESTADO_INICIAL)
 
 
 # --------------------------------------------------------------------------- consultas
@@ -98,8 +100,10 @@ def describir(nivel=None):
                  "este proceso, sus subprocesos y librerías nativas; sólo loopback y sockets UNIX.")
         if _estado["loopback"] is False:
             texto += " ATENCIÓN: loopback NO disponible (los servicios locales por TCP/UDP no funcionarán)."
-        if _estado["mapa_uid_gid"] is False:
-            texto += " Nota: mapa uid/gid no aplicado (los ficheros pueden aparecer como 'nobody')."
+        if _estado["mapa_uid"] is False:
+            texto += " Nota: mapa de uid no aplicado (getuid() devuelve 65534; los ficheros pueden aparecer como 'nobody')."
+        if _estado["mapa_gid"] is False:
+            texto += " Nota: mapa de gid no aplicado (getgid() devuelve 65534)."
         return texto
     if nivel == "python":
         return ("Aislamiento PYTHON (intercepción de socket): bloquea conexiones y DNS externos del "
@@ -126,21 +130,26 @@ def _escribir_proc(ruta, contenido):
 def _mapear_identidad(uid, gid):
     """
     Conserva uid/gid dentro del namespace de usuario (como `unshare --map-user`).
-    Devuelve la lista de incidencias (vacía si todo se aplicó). No es crítico
-    para el aislamiento de red, pero sin mapa os.getuid() devuelve el uid de
-    desbordamiento (65534) y los ficheros propios aparecen como 'nobody'.
+    Los tres pasos se intentan y registran por separado: uid_map es independiente
+    de los otros dos; gid_map exige que setgroups esté en "deny" (regla del kernel).
+    Devuelve (resultados, incidencias): resultados = {"setgroups": bool,
+    "mapa_uid": bool, "mapa_gid": bool}. Sin uid_map, os.getuid() devuelve el uid
+    de desbordamiento (65534) y los ficheros propios aparecen como 'nobody'; sin
+    gid_map ocurre lo mismo con getgid(). Nada de esto afecta al bloqueo de red.
     """
-    incidencias = []
-    for ruta, contenido, descripcion in (
-        ("/proc/self/setgroups", "deny", "setgroups"),
-        ("/proc/self/uid_map", f"{uid} {uid} 1", f"uid_map ({uid})"),
-        ("/proc/self/gid_map", f"{gid} {gid} 1", f"gid_map ({gid})"),
+    resultados, incidencias = {}, []
+    for clave, ruta, contenido, descripcion in (
+        ("setgroups", "/proc/self/setgroups", "deny", "setgroups"),
+        ("mapa_uid", "/proc/self/uid_map", f"{uid} {uid} 1", f"uid_map ({uid})"),
+        ("mapa_gid", "/proc/self/gid_map", f"{gid} {gid} 1", f"gid_map ({gid})"),
     ):
         try:
             _escribir_proc(ruta, contenido)
+            resultados[clave] = True
         except OSError as e:
+            resultados[clave] = False
             incidencias.append(f"{descripcion} no aplicado: {e.strerror or e}")
-    return incidencias
+    return resultados, incidencias
 
 
 def aislar_proceso():
@@ -166,8 +175,7 @@ def aislar_proceso():
 
     # A partir de aquí la red externa YA está bloqueada por el kernel. El resto
     # son ajustes de comodidad cuyo fallo se informa por separado y con precisión.
-    incidencias = _mapear_identidad(uid, gid)
-    mapa_ok = not incidencias
+    mapas, incidencias = _mapear_identidad(uid, gid)
     try:
         _subir_loopback()
         loopback_ok = True
@@ -177,7 +185,8 @@ def aislar_proceso():
     os.environ[MARCA_ENV] = "1"
     detalle = "; ".join(incidencias)
     _estado.update(nivel="proceso", detalle=detalle, loopback=loopback_ok,
-                   mapa_uid_gid=mapa_ok, incidencias=list(incidencias))
+                   setgroups=mapas["setgroups"], mapa_uid=mapas["mapa_uid"], mapa_gid=mapas["mapa_gid"],
+                   mapa_uid_gid=mapas["mapa_uid"] and mapas["mapa_gid"], incidencias=list(incidencias))
     return True, detalle
 
 
@@ -192,6 +201,9 @@ def estado():
         "interfaces": interfaces_de_red(),
         "detalle": _estado["detalle"],
         "loopback": _estado["loopback"],
+        "setgroups": _estado["setgroups"],
+        "mapa_uid": _estado["mapa_uid"],
+        "mapa_gid": _estado["mapa_gid"],
         "mapa_uid_gid": _estado["mapa_uid_gid"],
         "incidencias": list(_estado["incidencias"]),
     }

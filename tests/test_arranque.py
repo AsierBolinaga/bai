@@ -77,20 +77,32 @@ def test_config_aislamiento_invalido(tmp_path):
 def test_arranque_informa_incidencias_de_loopback_y_uid(monkeypatch):
     monkeypatch.setattr(aislamiento, "aislar_proceso", lambda: (True, "loopback no activado: EPERM"))
     monkeypatch.setattr(aislamiento, "estado", lambda: {
-        "loopback": False, "mapa_uid_gid": False,
+        "loopback": False, "mapa_uid": False, "mapa_gid": True, "mapa_uid_gid": False,
         "incidencias": ["uid_map (1000) no aplicado: Permission denied", "loopback no activado: EPERM"]})
     salidas = []
     arranque.preparar_arranque([], salida=salidas.append)
     texto = "\n".join(salidas)
     assert "Aislamiento de proceso activo" in texto
     assert "no se pudo activar la interfaz loopback" in texto
-    assert "mapa de uid/gid no se aplicó" in texto
+    assert "mapa de uid no se aplicó" in texto and "mapa de gid" not in texto
     assert "- uid_map (1000) no aplicado: Permission denied" in texto and "- loopback no activado: EPERM" in texto
 
 
 def test_arranque_sin_incidencias_no_muestra_avisos(monkeypatch):
     monkeypatch.setattr(aislamiento, "aislar_proceso", lambda: (True, ""))
-    monkeypatch.setattr(aislamiento, "estado", lambda: {"loopback": True, "mapa_uid_gid": True, "incidencias": []})
+    monkeypatch.setattr(aislamiento, "estado", lambda: {"loopback": True, "mapa_uid": True, "mapa_gid": True,
+                                                        "mapa_uid_gid": True, "incidencias": []})
     salidas = []
     arranque.preparar_arranque([], salida=salidas.append)
     assert len(salidas) == 1 and "ATENCIÓN" not in salidas[0]
+
+
+def test_arranque_informa_solo_el_gid_cuando_solo_falla_el_gid(monkeypatch):
+    monkeypatch.setattr(aislamiento, "aislar_proceso", lambda: (True, "gid_map (1000) no aplicado: Operation not permitted"))
+    monkeypatch.setattr(aislamiento, "estado", lambda: {
+        "loopback": True, "mapa_uid": True, "mapa_gid": False, "mapa_uid_gid": False,
+        "incidencias": ["gid_map (1000) no aplicado: Operation not permitted"]})
+    salidas = []
+    arranque.preparar_arranque([], salida=salidas.append)
+    texto = "\n".join(salidas)
+    assert "mapa de gid no se aplicó" in texto and "mapa de uid no se aplicó" not in texto and "loopback" not in texto

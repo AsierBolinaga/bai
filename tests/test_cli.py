@@ -233,3 +233,137 @@ a.run_assistant()
     assert "Hola, Usuario" in r.stdout and "Modo actual: OFFLINE" in r.stdout and "Agur" in r.stdout
     assert (tmp_path / "hist" / "historial.json").exists()
     assert not (tmp_path / "history").exists() and not (tmp_path / "config").exists()
+
+
+# --------------------------------------------------------------------------- bai.sh desde otro directorio
+@pytest.fixture
+def entorno_bash(tmp_path):
+    import os
+    import shutil
+    import sys
+    if not shutil.which("bash"):
+        pytest.skip("bash no disponible")
+    # PATH con el intérprete de los tests primero (sirve como 'python3' del sistema)
+    env = {"PATH": os.path.dirname(sys.executable) + os.pathsep + "/usr/bin:/bin", "HOME": str(tmp_path)}
+    return env
+
+
+def _ejecutar_bai_sh(ruta_script, args, cwd, env):
+    import subprocess
+    return subprocess.run(["bash", str(ruta_script)] + args, cwd=str(cwd), env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+def test_bai_sh_desde_otro_directorio_reenvia_argumentos(tmp_path, entorno_bash):
+    from config.motors_config import PROJECT_ROOT
+    r = _ejecutar_bai_sh(PROJECT_ROOT / "bai.sh", ["--online", "--help"], tmp_path, entorno_bash)
+    assert r.returncode == 0, r.stderr
+    assert "Iniciando sesión" in r.stdout
+    assert "usage: bai.py" in r.stdout and "--aislamiento" in r.stdout   # llegó a bai.py con los argumentos
+    assert not (tmp_path / "history").exists()
+
+
+def test_bai_sh_a_traves_de_enlace_simbolico_y_ruta_relativa(tmp_path, entorno_bash):
+    import os
+    from config.motors_config import PROJECT_ROOT
+    enlace = tmp_path / "bai-link.sh"
+    os.symlink(PROJECT_ROOT / "bai.sh", enlace)
+    r = _ejecutar_bai_sh("./bai-link.sh", ["--help"], tmp_path, entorno_bash)
+    assert r.returncode == 0, r.stderr
+    assert "usage: bai.py" in r.stdout
+
+
+def test_bai_sh_usa_el_venv_del_proyecto_si_existe(tmp_path, entorno_bash):
+    """Copia mínima del script en un 'proyecto' temporal con venv simulado: debe
+    activar ESE venv (relativo al script) y ejecutar ESE bai.py, no los del CWD."""
+    import os
+    import stat
+    from config.motors_config import PROJECT_ROOT
+    proyecto = tmp_path / "proyecto"
+    (proyecto / "venv" / "bin").mkdir(parents=True)
+    (proyecto / "venv" / "bin" / "activate").write_text('export BAI_VENV_ACTIVADO="$PWD"\n')
+    (proyecto / "bai.py").write_text('import os, sys; print("venv:", os.environ.get("BAI_VENV_ACTIVADO"), "args:", sys.argv[1:])\n')
+    script = proyecto / "bai.sh"
+    script.write_text((PROJECT_ROOT / "bai.sh").read_text())
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    otro = tmp_path / "otro"
+    otro.mkdir()
+    (otro / "bai.py").write_text('print("bai.py EQUIVOCADO")\n')
+    r = _ejecutar_bai_sh(script, ["--offline", "x y"], otro, entorno_bash)
+    assert r.returncode == 0, r.stderr
+    assert "EQUIVOCADO" not in r.stdout
+    assert f"venv: {otro} args: ['--offline', 'x y']" in r.stdout
+    assert "Aviso: no existe" not in r.stdout
+
+
+# --------------------------------------------------------------------------- persistencia entre procesos
+def _programa_sesion(tmp_path, entradas, fichero_recibido):
+    """Programa Python autónomo: backend controlado + almacenamiento temporal + CLI real."""
+    from config.motors_config import PROJECT_ROOT
+    return f"""
+import sys, builtins, json, types
+sys.path.insert(0, {str(PROJECT_ROOT)!r})
+import core.memory_engine as m
+m.HISTORY_DIR = {str(tmp_path / 'hist')!r}; m.SESSION_FILE = m.HISTORY_DIR + "/historial.json"
+m.MEMORY_PATH = {str(tmp_path / 'perfil.yaml')!r}
+import os
+if not os.path.exists(m.MEMORY_PATH):
+    open(m.MEMORY_PATH, "w").write("aprendido_durante_sesion: {{}}\\n")
+
+# backend controlado: registra lo que recibe y responde de forma determinista
+motor = types.ModuleType("tests.fakes.registrador")
+motor.NOMBRE, motor.TIPO = "registrador", "offline"
+motor.disponible = lambda cfg: (True, "")
+def responder(messages, cfg):
+    json.dump(messages, open({str(fichero_recibido)!r}, "w"))
+    return "respuesta a: " + messages[-1]["content"]
+motor.responder = responder
+sys.modules["tests.fakes.registrador"] = motor
+from core.motors import registry
+registry.registrar_motor("registrador", "tests.fakes.registrador")
+
+from config import motors_config as mc
+mc.SOBRESCRITURAS["aislamiento_offline"] = "python"
+from core.model_selector import ModelSelector
+cfg = mc.cargar_motors_config()
+cfg["offline"] = {{"motor": "registrador", "fallback": [], "max_mensajes_contexto": None, "motores": {{"registrador": {{"modelo": "reg-1"}}}}}}
+cfg["mostrar_motor"] = False
+import core.ai_engine as ai
+ai.set_selector(ModelSelector(config=cfg))
+import core.assistant as a
+entradas = iter({entradas!r})
+builtins.input = lambda *_: next(entradas)
+a.run_assistant()
+"""
+
+
+def test_historial_persiste_entre_dos_procesos_independientes(tmp_path):
+    import json
+    import subprocess
+    import sys
+    (tmp_path / "hist").mkdir()
+    recibido = tmp_path / "recibido.json"
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+
+    # Proceso 1: una conversación y salida normal (guarda el historial)
+    r1 = subprocess.run([sys.executable, "-c", _programa_sesion(tmp_path, ["mi furgoneta es una camper", "salir"], recibido)],
+                        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
+    assert r1.returncode == 0, r1.stderr
+    guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
+    assert guardado == [{"role": "user", "content": "mi furgoneta es una camper"},
+                        {"role": "assistant", "content": "respuesta a: mi furgoneta es una camper"}]
+
+    # Proceso 2 (intérprete nuevo): la segunda petición debe llevar la conversación guardada
+    r2 = subprocess.run([sys.executable, "-c", _programa_sesion(tmp_path, ["¿cómo se llama mi vehículo?", "salir"], recibido)],
+                        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
+    assert r2.returncode == 0, r2.stderr
+    mensajes = json.loads(recibido.read_text(encoding="utf-8"))
+    turnos = [(m["role"], m["content"]) for m in mensajes if m["role"] != "system"]
+    assert turnos == [("user", "mi furgoneta es una camper"),
+                      ("assistant", "respuesta a: mi furgoneta es una camper"),
+                      ("user", "¿cómo se llama mi vehículo?")]
+    # y la memoria aprendida en el proceso 1 llega como contexto de sistema en el proceso 2
+    assert any("una camper" in m["content"] for m in mensajes if m["role"] == "system")
+    # el historial acumulado en disco contiene ambas sesiones, en orden
+    guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
+    assert [m["content"] for m in guardado if m["role"] == "user"] == ["mi furgoneta es una camper", "¿cómo se llama mi vehículo?"]

@@ -116,7 +116,7 @@ def contexto_efectivo(messages):
     return sistema, [(m["role"], m["content"]) for m in turnos]
 
 
-def consolidar_sistema(messages, separador="\n\n"):
+def consolidar_sistema(messages):
     """
     Devuelve una nueva lista con un único mensaje 'system' inicial que concatena
     (en orden) el contenido de todos los mensajes de sistema, seguido de los
