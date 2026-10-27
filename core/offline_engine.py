@@ -1,27 +1,33 @@
-import yaml
-from config.motors_config import motors_config
+"""
+Fachada de compatibilidad para el modo OFFLINE.
 
-# Mapear motores disponibles
-MOTORES_DISPONIBLES = {
-    "gpt4all": "core.motors.gpt4all_engine",
-    "llama_cpp": "core.motors.llama_cpp_engine"
-}
+La lista de motores locales y su orden de fallback se definen en
+config/motors_config.yaml (sección `offline`); la lógica de selección está en
+core/model_selector.py. Los motores se registran en core/motors/registry.py.
+"""
+from core.model_selector import ModelSelector, SinMotorDisponible
 
-def responder_offline(prompt, context=None):
-    motor = motors_config.get("motor_offline")
 
-    if motor not in MOTORES_DISPONIBLES:
-        return False, f"[B.A.I] Motor '{motor}' no reconocido."
-
+def responder_offline(prompt, context=None, selector=None):
+    """
+    Devuelve (ok, texto) usando únicamente motores locales.
+    `prompt` puede ser un texto (se envuelve como mensaje de usuario) o una
+    lista de mensajes estilo chat. `context` (opcional) es un prompt de sistema.
+    """
+    propio = selector is None
+    selector = selector or ModelSelector()
+    if isinstance(prompt, str):
+        mensajes = []
+        if context:
+            mensajes.append({"role": "system", "content": context})
+        mensajes.append({"role": "user", "content": prompt})
+    else:
+        mensajes = list(prompt)
     try:
-        module_path = MOTORES_DISPONIBLES[motor]
-        motor_module = __import__(module_path, fromlist=[''])
-        respuesta = motor_module.responder(prompt)
-
-        if respuesta and len(respuesta.strip()) > 0:
-            return True, respuesta
-        else:
-            return False, "[B.A.I] El motor no devolvió respuesta."
-
-    except Exception as e:
-        return False, f"[B.A.I] Error ejecutando el motor '{motor}': {e}"
+        respuesta = selector.responder(mensajes, modo="offline")
+        return True, respuesta.texto
+    except SinMotorDisponible as e:
+        return False, f"[B.A.I] {e}"
+    finally:
+        if propio:
+            selector.cerrar()  # no dejar la guardia de sesión instalada

@@ -1,18 +1,22 @@
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
+"""
+Fachada de compatibilidad para el modo ONLINE.
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+La implementación real vive en core/motors/openai_engine.py y la selección de
+motor/modelo en core/model_selector.py. Esta función fuerza el modo online
+SIN fallback a motores locales.
+"""
+from core.model_selector import ModelSelector, SinMotorDisponible
 
-def responder_online(prompted_history):
+
+def responder_online(prompted_history, selector=None):
+    """Devuelve (ok, texto). Usa únicamente los motores online configurados."""
+    propio = selector is None
+    selector = selector or ModelSelector()
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=prompted_history,
-            temperature=0.5,
-            max_tokens=1024
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"[B.A.I] Error al contactar con OpenAI: {str(e)}"
+        respuesta = selector.responder(prompted_history, modo="online", fallback_offline=False)
+        return True, respuesta.texto
+    except SinMotorDisponible as e:
+        return False, f"[B.A.I] {e}"
+    finally:
+        if propio:
+            selector.cerrar()

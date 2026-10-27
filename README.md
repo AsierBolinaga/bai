@@ -13,13 +13,69 @@ graph LR
     A[User (CLI)] --> B[bai.py]
     B --> C[assistant.py]
     C --> D[ai_engine.py]
-    D --> E[online_engine.py]
-    D --> F[offline_engine.py]
-    E --> G[OpenAI]
-    F --> H[local engines: llama.cpp, etc]
+    D --> S[model_selector.py]
+    S --> R[motors/registry.py]
+    R --> G[motors/openai_engine.py → OpenAI]
+    R --> H[motors/llama_cpp_engine.py]
+    R --> H2[motors/gpt4all_engine.py]
+    S --> K[config/motors_config.yaml]
     D --> I[memory_engine.py]
-    I --> J[boli.yaml memory + JSON history]
+    I --> J[user_profile.yaml memory + JSON history]
 ```
+
+### Model selection workflow
+
+`ai_engine.py` builds the **same** message list (system prompt + personal memory +
+history + user input) for both modes and hands it to `ModelSelector`, which
+resolves the motor/model from `config/motors_config.yaml`:
+
+| Mode / policy                        | Candidate order                                                        |
+|--------------------------------------|------------------------------------------------------------------------|
+| `offline` (default)                  | `offline.motor` → `offline.fallback[...]` — local motors only          |
+| `online`, `prioridad: local` (default) | offline candidates → `online.motor` → `online.fallback[...]`          |
+| `online`, `prioridad: online`        | `online.motor` → `online.fallback[...]` → *(if `fallback_offline`)* offline candidates |
+
+**Mode policy**
+
+- B.A.I starts in `offline` mode. Offline means *this machine only*, enforced at the
+  level described in "Network isolation" below (kernel namespace by default).
+- B.A.I **never switches from offline to online on its own**. Online inference is
+  only possible after explicit authorization: `python bai.py --online` at launch,
+  the command *"pasa a modo online"* (only when the session is not process-isolated),
+  or `modo_por_defecto: online` set by the user. When no local motor can answer
+  in offline mode, the assistant says so and explains how to authorize online use.
+- Online inference is considered necessary only when no local motor is available
+  or able to answer (`prioridad: local`), or when the user asks for it in a single
+  turn with the prefix `online: <message>` (refused while in offline mode). Set
+  `prioridad: online` to prefer the cloud model whenever online mode is active.
+- Degrading from online to local never needs authorization (it is more private).
+
+For every candidate the selector checks, without loading anything: registered &
+implemented → `disponible()` (library installed, model file present, API key set)
+→ connectivity (online motors only) → `responder()`. The first valid answer wins;
+if a motor fails while generating, the next one is tried. If none can answer, the
+assistant explains why for each motor (`estado` command shows the same diagnosis).
+
+Motors never see credentials in config: the OpenAI key is read from the
+`OPENAI_API_KEY` environment variable (or `.env`).
+
+Every answer ends with a tag showing which backend produced it
+(`[llama_cpp · mistral-7b-instruct-v0.1.Q4_0.gguf · offline · fallback]`);
+disable with `mostrar_motor: false`. Switching mode also reports the motor that
+will be used.
+
+### Network isolation in offline mode (what is guaranteed, and by whom)
+
+| Level (`aislamiento_offline`) | Mechanism | Guarantee | Limits |
+|---|---|---|---|
+| `proceso` (default, Linux) | At startup in offline mode B.A.I moves itself into a private user+network namespace (`os.unshare`, no root, no extra binaries) and brings `lo` up. | **Kernel-enforced**: no external TCP/UDP/DNS/raw traffic for the process, its subprocesses and native libraries. Loopback (IPv4/IPv6, TCP/UDP) and UNIX sockets keep working. | Irreversible for the session: *"pasa a modo online"* is refused and explains to restart with `python bai.py --online`. Local services running *outside* the namespace (e.g. a system-wide Ollama on 127.0.0.1) are unreachable. Needs Python ≥ 3.12 and unprivileged user namespaces; otherwise B.A.I falls back to `python` and says so. |
+| `python` (fallback / `--aislamiento python`) | `core/network_guard.py` intercepts `socket.connect/connect_ex/sendto/sendmsg/send/sendall/sendfile`, the TLS writes `ssl.SSLSocket.send/sendall/write/sendfile/do_handshake` and the DNS functions `getaddrinfo/gethostbyname[_ex]/gethostbyaddr/getnameinfo`. Writes on sockets connected *before* activation are checked against `getpeername()`. Only loopback/UNIX destinations pass; active for the whole offline session and around every offline motor call, in every thread; blocked attempts are reported. | Covers Python code (http.client, urllib, requests, httpx, asyncio, ssl…). Allows switching to online in-session. | **Not** complete: subprocesses, native code opening sockets, direct `_socket` use, writes on the raw file descriptor (`os.write`/`os.sendfile`) and pre-saved references escape. It is process-global, so a concurrent "online" thread would also be blocked. |
+
+`estado` always shows the level actually in force with this wording, and
+`python -m core.diagnostico --probar --aislar --bloquear-red` demonstrates it.
+Independently of the level: offline mode never checks connectivity, never
+calls the online motor, and GPT4All always runs with `allow_download=False`
+(a `true` in the yaml is ignored with a warning).
 
 ---
 
@@ -33,6 +89,16 @@ graph LR
   - `pyyaml`
   - `python-dotenv`
   - `unidecode`
+
+---
+
+## ▶️ Running
+
+```bash
+python bai.py                      # offline, process-isolated (default)
+python bai.py --online             # explicitly authorize online services for this session
+python bai.py --aislamiento python # offline with the Python guard (allows switching online in-session)
+```
 
 ---
 
@@ -52,8 +118,24 @@ This script:
 
 ## ✨ Useful commands (text mode)
 
-- `Switch to offline mode`: forces use of the local engine
-- `Switch to online mode`: switches back to OpenAI
+- `Pasa a modo offline` / `Switch to offline mode`: local engines only (external connections blocked)
+- `Pasa a modo online` / `Switch to online mode`: authorizes the online engine (local still preferred)
+- `online: <message>`: use the online engine for this message only (requires online mode)
+- `estado`: shows current mode, policy and which motors/models are available (and why not)
+
+**Accepted syntax for mode commands** — the *whole* message must be the command
+(case-insensitive; an optional `B.A.I,` vocative, `por favor`/`please`, and a
+final `.`/`!` are allowed):
+
+```
+[B.A.I,] [por favor,] pasa|pasar|cambia|cambiar a[l] modo online|offline [por favor]
+[B.A.I,] [please,] switch to online|offline mode [please]
+```
+
+Anything else is an ordinary message and **never** changes the mode: negations
+("No quiero cambiar a modo online"), questions ("¿puedo pasar a modo online?",
+"what does 'switch to online mode' do?"), quoted examples ("Explica qué significa
+<<pasa a modo online>>") or a command embedded in a longer request.
 - `salir`, `exit`, `quit`: exit the session
 - `reset`: clears the conversation history
 - `ver memoria`: shows the current history
@@ -63,11 +145,13 @@ This script:
 
 ## 🚀 How it works
 
-- By default, B.A.I responds using **OpenAI**
-- If there is **no connection** or the user says *"Switch to offline mode"*, it uses the local model
-- You can switch back to online mode with *"Switch to online mode"*
+- The starting mode is `modo_por_defecto` in `config/motors_config.yaml` (`offline` by default)
+- In **offline** mode only local motors run, with all external connections blocked; B.A.I never leaves this mode by itself
+- *"Pasa a modo online"* / *"Switch to online mode"* authorizes the online motor (OpenAI). With `prioridad: local` it is used only when no local motor answers, or per message with the prefix `online:`. If there is no connection/API key or the API fails, local motors answer
+- *"Pasa a modo offline"* / *"Switch to offline mode"* returns to local-only
+- `estado` shows the current mode, its policy and the availability of each motor/model
 - The entire conversation is saved in `history/historial.json`
-- The **personal memory context** is kept in `config/data/boli.yaml`
+- The **personal memory context** is kept in `config/data/user_profile.yaml`
 
 ---
 
@@ -75,45 +159,125 @@ This script:
 
 ```
 core/
-├── ai_engine.py         # Chooses between online or offline engine
+├── ai_engine.py         # Builds the context, handles mode commands, calls the selector
+├── model_selector.py    # Chooses motor/model for the active mode, with fallback chain
+├── network_guard.py     # Python-level guard: blocks non-local socket/DNS use in offline mode (fallback)
+├── aislamiento.py       # Process-level isolation: private network namespace (kernel-enforced)
+├── arranque.py          # bai.py options (--online / --offline / --aislamiento) and isolation at startup
+├── diagnostico.py       # CLI diagnostics: python -m core.diagnostico [--probar] [--bloquear-red]
 ├── assistant.py         # Main CLI
 ├── memory_engine.py     # Personalized memory and history management
-├── offline_engine.py    # Calls local models (e.g., llama.cpp)
-├── online_engine.py     # Calls OpenAI
-├── motors/              # Pluggable engines (offline)
-│   └── llama_cpp_engine.py
+├── offline_engine.py    # Compatibility facade: force offline motors
+├── online_engine.py     # Compatibility facade: force online motors (no local fallback)
+├── motors/              # Pluggable engines (online and offline)
+│   ├── base.py          # Motor contract (disponible / responder), MotorError, helpers
+│   ├── registry.py      # name -> module registry
+│   ├── openai_engine.py
+│   ├── llama_cpp_engine.py
+│   ├── gpt4all_engine.py
+│   └── ollama_engine.py # TODO (detected as "not implemented" by the registry)
 config/
 ├── data/
-│   ├── boli.yaml        # Personal memory
+│   ├── user_profile.yaml        # Personal memory
 │   └── system_prompt.txt
-├── motors_config.yaml   # Offline engine configuration
+├── motors_config.py     # Config loader (absolute paths, defaults, legacy format, validation)
+├── motors_config.yaml   # Mode + online/offline motors configuration
+tests/                   # pytest suite (no models, credentials or network required)
 history/
 └── historial.json       # Unified session history
 ```
 
 ---
 
-## 🔌 Adding offline engines
+## 🔌 Adding engines (online or offline)
 
-1. Create a new file in `core/motors/my_engine.py`
-2. Implement the `respond(prompt)` function
-3. Register the engine in `offline_engine.py` (dictionary of available engines)
-4. Add it to `motors_config.yaml` if desired
+1. Create `core/motors/my_engine.py` implementing the contract in `core/motors/base.py`:
+   ```python
+   NOMBRE = "my_engine"
+   TIPO = "offline"                      # or "online"
+   def disponible(config) -> (bool, str) # library installed? model present? key set?
+   def responder(messages, config) -> str  # raise MotorError on failure, never return error text
+   ```
+   Do not import heavy libraries at module level (import them inside the functions).
+2. Register it in `core/motors/registry.py` (`MOTORES["my_engine"] = "core.motors.my_engine"`)
+3. Add it to `motors_config.yaml` as `motor` or in `fallback`, with its settings under `motores`
 
 ---
 
 ## 📋 Example `motors_config.yaml` configuration
 
 ```yaml
-motor: llama_cpp
-ruta_modelo: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+modo_por_defecto: offline         # offline | online
+aislamiento_offline: proceso      # proceso (kernel namespace, default) | python (socket guard)
+
+online:
+  motor: openai
+  prioridad: local                # local: cloud only if no local motor answers | online: cloud first
+  fallback_offline: true          # (prioridad online) use local motors if no network / key / API error
+  max_mensajes_contexto: 60       # history messages sent to the model
+  motores:
+    openai:
+      modelo: gpt-4o
+      temperature: 0.5
+      max_tokens: 1024
+
+offline:
+  motor: llama_cpp
+  fallback: [gpt4all]             # tried in order if the main motor fails
+  max_mensajes_contexto: 20
+  motores:
+    llama_cpp:
+      model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+      n_ctx: 2048
+    gpt4all:
+      model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
 ```
+
+Relative paths are resolved from the project root. The old flat format
+(`motor_offline` / `model_path` / `ruta_modelo`) is still accepted.
+
+---
+
+## 🩺 Diagnostics and real model execution
+
+```bash
+python -m core.diagnostico                         # libraries, GGUF file check, motor availability
+python -m core.diagnostico --probar --bloquear-red # real offline generation with all sockets blocked
+python -m core.diagnostico --modo online --probar  # online check (needs OPENAI_API_KEY)
+```
+
+Checklist for running the local model for real:
+
+1. `pip install llama-cpp-python` (needs a C/C++ compiler + cmake, or a prebuilt wheel) and/or `pip install gpt4all`
+2. Download the GGUF file to `models/` (see the URL in `setup_bai.sh`, ~4.1 GiB for Q4_0); relative paths resolve from the project root
+3. Run `python -m core.diagnostico` – it validates the GGUF header (detects truncated downloads / HTML error pages saved as `.gguf`)
+4. Keep `chat_format: llama-2` for Mistral-Instruct: llama-cpp-python's `mistral-instruct` format drops system messages (B.A.I's identity and memory)
+
+---
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite covers configuration loading, the motor registry, the selection and
+fallback logic for both modes, the `ai_engine` commands, memory side effects on
+failed turns, the three motor adapters and the diagnostics tool. External
+libraries (`openai`, `llama_cpp`, `gpt4all`) and the network are simulated, so no
+model files, credentials or connection are needed.
+
+`tests/test_real_models.py` additionally exercises the **real** llama.cpp and
+GPT4All backends on a tiny GGUF model generated locally
+(`tests/helpers/gguf_minimo.py`, needs `pip install gguf numpy`). These tests are
+skipped automatically when the libraries are not installed.
 
 ---
 
 ## 🧠 Memory and context
 
-- `boli.yaml` stores data learned during sessions
+- `user_profile.yaml` stores data learned during sessions
 - `system_prompt.txt` defines the assistant's base behavior
 - `historial.json` is created on startup and continuously updated
 
@@ -126,7 +290,7 @@ ruta_modelo: models/mistral-7b-instruct-v0.1.Q4_0.gguf
 3. **Identity customization** – completed ✅  
 4. **Controlled online mode (OpenAI)** – completed ✅  
 5. **Robust history and flow** – completed ✅  
-6. Local engine integration `llama_cpp` 🔄  
+6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. Natural local learning (in progress)  
 8. **Visual interface (UI)**  
 9. **Voice system**  

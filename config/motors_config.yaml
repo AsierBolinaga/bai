@@ -1,4 +1,82 @@
-# Configuración del motor LLM offline por defecto
-motor_offline: llama_cpp
-modelo: mistral-7b-instruct-v0.1.Q4_0
-model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+# ---------------------------------------------------------------------------
+# Configuración de motores LLM de B.A.I
+#
+# modo_por_defecto : modo de trabajo al arrancar -> "offline" | "online"
+#   - offline : SÓLO motores locales. Durante la generación se bloquea cualquier
+#               conexión a destinos no locales, sea cual sea la configuración.
+#               B.A.I nunca pasa a online por sí solo: hace falta la orden
+#               explícita del usuario ("pasa a modo online").
+#   - online  : el usuario autoriza el uso de servicios externos (OpenAI).
+#               Con `prioridad: local` el motor online sólo se usa cuando ningún
+#               motor local está disponible o consigue responder.
+#
+# Cada sección (online / offline) define:
+#   motor                 : motor principal
+#   fallback              : lista ordenada de motores alternativos del mismo tipo
+#   max_mensajes_contexto : nº máximo de mensajes de historial (no "system") que
+#                           se envían al modelo. Puede sobrescribirse por motor.
+#   motores               : configuración específica de cada motor
+# ---------------------------------------------------------------------------
+modo_por_defecto: offline
+
+# Cómo se garantiza que el modo offline no sale a la red:
+#   proceso -> (recomendado, Linux) al arrancar en modo offline B.A.I se mueve a un
+#              namespace de red propio: el kernel bloquea todo tráfico externo del
+#              proceso, sus subprocesos y librerías nativas; loopback sigue disponible.
+#              Para autorizar servicios online hay que reiniciar: python bai.py --online
+#   python  -> intercepción de `socket` en el intérprete. Permite cambiar a online en la
+#              misma sesión, pero NO cubre subprocesos ni código nativo.
+# Si "proceso" no está disponible en el sistema se usa "python" y se avisa.
+aislamiento_offline: proceso
+
+# Añade al final de cada respuesta una etiqueta con el backend que ha respondido:
+#   [motor · modelo · online|offline (· fallback)]
+mostrar_motor: true
+
+online:
+  motor: openai
+  fallback: []
+  # Qué se intenta primero en modo online:
+  #   local  -> motores locales; el online sólo si ninguno local responde (recomendado)
+  #   online -> motor online primero; locales como respaldo si fallback_offline es true
+  prioridad: local
+  fallback_offline: true
+  max_mensajes_contexto: 60
+  motores:
+    openai:
+      modelo: gpt-4o
+      temperature: 0.5
+      max_tokens: 1024
+      # Host usado para comprobar la conectividad antes de llamar a la API
+      host_conectividad: api.openai.com
+
+offline:
+  motor: llama_cpp
+  fallback: [gpt4all]
+  max_mensajes_contexto: 20
+  motores:
+    llama_cpp:
+      # Fichero GGUF (formato de llama.cpp / GPT4All). Ruta relativa a la raíz del
+      # proyecto. Descarga de referencia (ver setup_bai.sh):
+      # https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF/resolve/main/mistral-7b-instruct-v0.1.Q4_0.gguf
+      model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+      n_ctx: 2048
+      max_tokens: 256
+      temperature: 0.7
+      # Mistral-Instruct usa las etiquetas [INST] ... [/INST] de Llama-2. Se usa
+      # "llama-2" y NO "mistral-instruct" porque este último, en llama-cpp-python,
+      # descarta los mensajes de sistema (identidad y memoria de B.A.I).
+      chat_format: llama-2
+      verbose: false
+    gpt4all:
+      model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+      n_ctx: 2048
+      # NOTA: GPT4All se ejecuta siempre con allow_download=False. Un valor
+      # "allow_download: true" aquí se ignora (los motores offline nunca
+      # contactan con gpt4all.io ni con ningún otro servicio externo).
+      # Plantilla Mistral-Instruct ({0} = mensaje del usuario)
+      prompt_template: "[INST] {0} [/INST]"
+    ollama:
+      # Motor pendiente de implementar (core/motors/ollama_engine.py)
+      modelo: mistral
+      host: http://localhost:11434

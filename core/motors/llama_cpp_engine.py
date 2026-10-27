@@ -1,57 +1,108 @@
-from llama_cpp import Llama
-import os
-import yaml
+"""
+Motor offline: llama.cpp (llama-cpp-python).
+
+El modelo se carga de forma perezosa en la primera petición y se mantiene en
+caché (una instancia por ruta de modelo). Importar este módulo no carga nada.
+"""
+import atexit
 from time import time
 
-# Ruta de configuración del motor
-CONFIG_PATH = "config/motors_config.yaml"
+from config.motors_config import resolver_ruta
+from core.motors.base import MotorError, MotorNoDisponible, libreria_instalada, validar_gguf, validar_mensajes
 
-def cargar_configuracion():
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+NOMBRE = "llama_cpp"
+TIPO = "offline"
 
-def cargar_modelo_llama():
-    config = cargar_configuracion()
-    model_path = config.get("model_path", "models/mistral-7b-instruct-v0.1.Q4_0.gguf")
+N_CTX_POR_DEFECTO = 2048
+MAX_TOKENS_POR_DEFECTO = 256
+TEMPERATURE_POR_DEFECTO = 0.7
+CHAT_FORMAT_POR_DEFECTO = "llama-2"
+STOP_POR_DEFECTO = ["</s>", "###"]
 
-    print(f"[B.A.I] Cargando modelo llama.cpp desde: {model_path}")
+_modelos = {}  # model_path -> instancia Llama
 
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"[B.A.I] No se encontró el modelo en {model_path}")
-    
+
+def liberar_modelos():
+    """Libera los modelos cargados. Se ejecuta al salir para evitar errores de
+    destrucción tardía de llama-cpp-python durante el cierre del intérprete."""
+    for modelo in list(_modelos.values()):
+        try:
+            cerrar = getattr(modelo, "close", None)
+            if callable(cerrar):
+                cerrar()
+        except Exception:
+            pass
+    _modelos.clear()
+
+
+atexit.register(liberar_modelos)
+
+
+def _ruta_modelo(config):
+    ruta = (config or {}).get("model_path")
+    if not ruta:
+        return None
+    return resolver_ruta(ruta)
+
+
+def disponible(config):
+    if not libreria_instalada("llama_cpp"):
+        return False, "librería 'llama_cpp' no instalada"
+    return validar_gguf(_ruta_modelo(config))
+
+
+def cargar_modelo(config):
+    """Carga (o recupera de caché) el modelo indicado en config['model_path']."""
+    ok, motivo = disponible(config)
+    if not ok:
+        raise MotorNoDisponible(motivo)
+
+    ruta = _ruta_modelo(config)
+    if ruta in _modelos:
+        return _modelos[ruta]
+
+    try:
+        from llama_cpp import Llama
+    except ImportError as e:
+        raise MotorNoDisponible("librería 'llama_cpp' no instalada") from e
+
+    print(f"[B.A.I] Cargando modelo llama.cpp desde: {ruta}")
     try:
         modelo = Llama(
-            model_path=model_path,
-            n_ctx=2048,        
-            use_mlock=True,
-            verbose=True,
-            chat_format="llama-2"
+            model_path=ruta,
+            n_ctx=config.get("n_ctx", N_CTX_POR_DEFECTO),
+            use_mlock=config.get("use_mlock", True),
+            verbose=config.get("verbose", False),
+            chat_format=config.get("chat_format", CHAT_FORMAT_POR_DEFECTO),
         )
-        print("[B.A.I] Modelo cargado correctamente.")
-        return modelo
     except Exception as e:
-        print(f"[B.A.I] Error al cargar el modelo: {e}")
-        return None
+        raise MotorError(f"Error al cargar el modelo llama.cpp: {e}") from e
 
-modelo = cargar_modelo_llama()
+    print("[B.A.I] Modelo cargado correctamente.")
+    _modelos[ruta] = modelo
+    return modelo
 
-def responder(prompt):
-    if not modelo:
-        return "[B.A.I] El modelo no está disponible."
 
-    print(f"[DEBUG] Prompt enviado a llama.cpp:{prompt[:300]}...")  # recorte para debug
+def responder(messages, config):
+    validar_mensajes(messages)
+    config = config or {}
+    modelo = cargar_modelo(config)
 
     inicio = time()
-
     try:
-        resultado = modelo(
-            prompt=prompt,
-            max_tokens=256,
-            temperature=0.7,
-            stop=["</s>", "###"]
+        resultado = modelo.create_chat_completion(
+            messages=messages,
+            max_tokens=config.get("max_tokens", MAX_TOKENS_POR_DEFECTO),
+            temperature=config.get("temperature", TEMPERATURE_POR_DEFECTO),
+            stop=config.get("stop", STOP_POR_DEFECTO),
         )
-        duracion = time() - inicio
-        print(f"[DEBUG] Tiempo de respuesta: {duracion:.2f} segundos")
-        return resultado["choices"][0]["text"].strip()
+        texto = resultado["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"[B.A.I] Error al usar llama.cpp: {e}"
+        raise MotorError(f"Error al usar llama.cpp: {e}") from e
+
+    if config.get("debug"):
+        print(f"[DEBUG] llama.cpp respondió en {time() - inicio:.2f} s")
+
+    if not texto or not texto.strip():
+        raise MotorError("llama.cpp devolvió una respuesta vacía.")
+    return texto.strip()

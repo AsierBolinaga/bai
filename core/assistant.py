@@ -1,11 +1,13 @@
 from core.config import nombre_ia, master_name
 from core.memory_engine import save_chat_history, load_full_history, learn_from_input
-from core.ai_engine import ask
+from core.ai_engine import ask, describir_estado
 
 chat_history = load_full_history()
 
 def run_assistant():
-    print(f"[{nombre_ia}] Hola, {master_name}. Conectado a GPT con memoria de sesión.")
+    print(f"[{nombre_ia}] Hola, {master_name}. Memoria de sesión cargada.")
+    print(f"[{nombre_ia}] {describir_estado()}")
+    print(f"[{nombre_ia}] Comandos: 'pasa a modo offline' | 'pasa a modo online' | 'estado'")
 
     while True:
         try:

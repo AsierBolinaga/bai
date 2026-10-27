@@ -7,7 +7,7 @@ import re
 
 HISTORY_DIR = "history"
 SESSION_FILE = os.path.join(HISTORY_DIR, "historial.json")
-MEMORY_PATH = "config/data/boli.yaml"
+MEMORY_PATH = "config/data/user_profile.yaml"
 MAX_MESSAGES = 5000
 os.makedirs(HISTORY_DIR, exist_ok=True)
 

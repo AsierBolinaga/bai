@@ -12,7 +12,7 @@ __pycache__/
 .venv/
 
 # Docker
-data/
+/data/
 *.zip
 .env
 
@@ -20,3 +20,13 @@ data/
 .vscode/
 .idea/
 *.swp
+
+# Private local configuration and credentials
+config/data/*.local.*
+config/data/*.secret.*
+.env.*
+*.pem
+*.key
+
+# Tests
+.pytest_cache/

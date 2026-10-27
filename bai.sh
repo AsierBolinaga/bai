@@ -6,4 +6,4 @@ echo "[B.A.I] Iniciando sesión con B.A.I..."
 source venv/bin/activate
 
 # Ejecutar sistema
-python bai.py
+python bai.py "$@"
