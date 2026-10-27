@@ -5,9 +5,11 @@ from datetime import datetime
 import unicodedata
 import re
 
-HISTORY_DIR = "history"
+# Rutas absolutas respecto a la raíz del proyecto (independientes del directorio de trabajo)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HISTORY_DIR = os.path.join(_PROJECT_ROOT, "history")
 SESSION_FILE = os.path.join(HISTORY_DIR, "historial.json")
-MEMORY_PATH = "config/data/user_profile.yaml"
+MEMORY_PATH = os.path.join(_PROJECT_ROOT, "config", "data", "user_profile.yaml")
 MAX_MESSAGES = 5000
 os.makedirs(HISTORY_DIR, exist_ok=True)
 

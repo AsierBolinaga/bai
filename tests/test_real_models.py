@@ -60,6 +60,38 @@ class TestLlamaCppReal:
         assert "Eres B.A.I" in f.format_llama2(messages=MENSAJES).prompt
         assert "Eres B.A.I" not in f.format_mistral_instruct(messages=MENSAJES).prompt
 
+    def test_regresion_formateador_llama2_solo_lee_el_primer_system(self):
+        """Hallazgo reproducido en la frontera del formateador: sin consolidar, la
+        memoria y la instrucción de idioma desaparecen del prompt final."""
+        from llama_cpp import llama_chat_format as f
+        from tests.test_base import MENSAJES_BAI
+        crudo = f.format_llama2(messages=MENSAJES_BAI).prompt
+        assert "Eres B.A.I" in crudo
+        assert "furgoneta camper" not in crudo and "idioma del usuario" not in crudo
+
+    def test_prompt_final_consolidado_preserva_todo_el_contexto(self):
+        """Con consolidar_sistema (lo que hace el adaptador) el prompt final de
+        llama-2 contiene identidad, memoria, idioma y todos los turnos en orden."""
+        from llama_cpp import llama_chat_format as f
+        from core.motors.base import consolidar_sistema
+        from tests.test_base import MENSAJES_BAI
+        prompt = f.format_llama2(messages=consolidar_sistema(MENSAJES_BAI)).prompt
+        posiciones = [prompt.index(x) for x in ("Eres B.A.I", "furgoneta camper", "idioma del usuario",
+                                                 "<</SYS>>", "hola", "buenas", "mi vehículo")]
+        assert posiciones == sorted(posiciones)          # todo presente y en orden
+        assert prompt.count("<<SYS>>") == 1
+
+    def test_adaptador_real_acepta_varios_system(self, modelo_real, monkeypatch):
+        """El adaptador real con varios mensajes 'system' genera sin error (llama.cpp
+        recibiría un prompt con todo el contexto)."""
+        from core.motors import llama_cpp_engine as motor
+        from tests.test_base import MENSAJES_BAI
+        monkeypatch.setattr(motor, "_modelos", {})
+        with GuardiaRed() as g:
+            texto = motor.responder(MENSAJES_BAI, _cfg(modelo_real))
+        assert isinstance(texto, str) and texto and g.intentos == []
+        motor.liberar_modelos()
+
     def test_error_de_generacion_es_motor_error(self, modelo_real, monkeypatch):
         from core.motors import llama_cpp_engine as motor
         from core.motors.base import MotorError

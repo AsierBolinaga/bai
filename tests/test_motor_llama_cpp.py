@@ -151,3 +151,15 @@ def test_liberar_modelos_cierra_y_vacia_cache(llama_fake, modelo_tmp):
     # Tras liberar, la siguiente petición vuelve a cargar el modelo
     motor.responder(mensajes_basicos(), {"model_path": modelo_tmp})
     assert len(llama_fake.instancias) == 2
+
+
+def test_regresion_adaptador_consolida_los_mensajes_de_sistema(llama_fake, modelo_tmp):
+    """Regresión: los formateadores de llama-cpp-python sólo leen el primer 'system';
+    el adaptador debe entregar un único 'system' con identidad + memoria + idioma."""
+    from tests.test_base import MENSAJES_BAI
+    motor.responder(MENSAJES_BAI, {"model_path": modelo_tmp})
+    enviados = llama_fake.instancias[0].llamadas[0]["messages"]
+    assert [m["role"] for m in enviados] == ["system", "user", "assistant", "user"]
+    for fragmento in ("Eres B.A.I", "furgoneta camper", "idioma del usuario"):
+        assert fragmento in enviados[0]["content"]
+    assert [m["content"] for m in enviados[1:]] == ["hola", "buenas", "¿cómo se llama mi vehículo?"]

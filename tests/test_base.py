@@ -89,3 +89,34 @@ def test_validar_gguf_rechaza_ficheros_invalidos(tmp_path, preparar, fragmento):
 def _escribir(path, datos):
     path.write_bytes(datos)
     return str(path)
+
+
+
+# --------------------------------------------------------------------------- consolidar_sistema / contexto_efectivo
+MENSAJES_BAI = [
+    {"role": "system", "content": "Eres B.A.I, un asistente modular."},
+    {"role": "system", "content": "El usuario se llama Test y tiene una furgoneta camper."},
+    {"role": "user", "content": "hola"},
+    {"role": "assistant", "content": "buenas"},
+    {"role": "system", "content": "Responde siempre en el idioma del usuario."},
+    {"role": "user", "content": "¿cómo se llama mi vehículo?"},
+]
+
+
+def test_consolidar_sistema_une_todos_los_system_y_conserva_turnos():
+    res = base.consolidar_sistema(MENSAJES_BAI)
+    assert [m["role"] for m in res] == ["system", "user", "assistant", "user"]
+    assert res[0]["content"] == ("Eres B.A.I, un asistente modular.\n\n"
+                                 "El usuario se llama Test y tiene una furgoneta camper.\n\n"
+                                 "Responde siempre en el idioma del usuario.")
+    assert [m["content"] for m in res[1:]] == ["hola", "buenas", "¿cómo se llama mi vehículo?"]
+    assert MENSAJES_BAI[0]["content"] == "Eres B.A.I, un asistente modular."  # no muta la entrada
+
+
+def test_consolidar_sistema_sin_system():
+    turnos = [{"role": "user", "content": "x"}]
+    assert base.consolidar_sistema(turnos) == turnos
+
+
+def test_contexto_efectivo_es_igual_consolidado_o_no():
+    assert base.contexto_efectivo(MENSAJES_BAI) == base.contexto_efectivo(base.consolidar_sistema(MENSAJES_BAI))

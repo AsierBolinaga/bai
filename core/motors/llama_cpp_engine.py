@@ -8,7 +8,8 @@ import atexit
 from time import time
 
 from config.motors_config import resolver_ruta
-from core.motors.base import MotorError, MotorNoDisponible, libreria_instalada, validar_gguf, validar_mensajes
+from core.motors.base import (MotorError, MotorNoDisponible, consolidar_sistema, libreria_instalada,
+                              validar_gguf, validar_mensajes)
 
 NOMBRE = "llama_cpp"
 TIPO = "offline"
@@ -88,10 +89,15 @@ def responder(messages, config):
     config = config or {}
     modelo = cargar_modelo(config)
 
+    # Los formateadores de llama-cpp-python (llama-2, chatml, ...) sólo leen el
+    # PRIMER mensaje de sistema: sin consolidar se perderían la memoria personal
+    # y la instrucción de idioma que ai_engine añade como mensajes 'system'.
+    mensajes = consolidar_sistema(messages)
+
     inicio = time()
     try:
         resultado = modelo.create_chat_completion(
-            messages=messages,
+            messages=mensajes,
             max_tokens=config.get("max_tokens", MAX_TOKENS_POR_DEFECTO),
             temperature=config.get("temperature", TEMPERATURE_POR_DEFECTO),
             stop=config.get("stop", STOP_POR_DEFECTO),

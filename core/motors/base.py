@@ -17,7 +17,14 @@ Todo módulo de motor (core/motors/<nombre>_engine.py) debe exponer:
         # Debe lanzar MotorError (o una subclase) si no puede responder,
         # NUNCA devolver el error como texto.
 
-Este módulo ofrece además utilidades para motores que sólo aceptan texto plano.
+Este módulo ofrece además utilidades para motores que sólo aceptan texto plano
+o un único mensaje de sistema:
+  - consolidar_sistema(messages): funde TODOS los mensajes 'system' (prompt de
+    identidad, memoria personal, instrucción de idioma...) en uno solo al
+    principio, conservando los turnos user/assistant en orden. Obligatorio para
+    backends cuyo formateador sólo lee el primer mensaje de sistema (p. ej. los
+    formatos 'llama-2'/'chatml' de llama-cpp-python).
+  - separar_sistema / mensajes_a_prompt: para backends de texto plano (GPT4All).
 """
 import importlib.util
 import os
@@ -98,6 +105,32 @@ def separar_sistema(messages):
     sistema = [m["content"] for m in messages if m["role"] == "system" and m["content"]]
     turnos = [m for m in messages if m["role"] != "system"]
     return "\n\n".join(sistema), turnos
+
+
+def contexto_efectivo(messages):
+    """
+    (texto_sistema, [(role, content), ...]) — representación canónica de lo que
+    un backend debe recibir. Sirve para comparar adaptadores entre sí en tests.
+    """
+    sistema, turnos = separar_sistema(messages)
+    return sistema, [(m["role"], m["content"]) for m in turnos]
+
+
+def consolidar_sistema(messages, separador="\n\n"):
+    """
+    Devuelve una nueva lista con un único mensaje 'system' inicial que concatena
+    (en orden) el contenido de todos los mensajes de sistema, seguido de los
+    turnos user/assistant en su orden original. Si no hay mensajes de sistema
+    devuelve sólo los turnos. El contexto efectivo es el mismo que el de
+    `separar_sistema`, de modo que distintos backends reciben información
+    equivalente.
+    """
+    sistema, turnos = separar_sistema(messages)
+    resultado = []
+    if sistema:
+        resultado.append({"role": "system", "content": sistema})
+    resultado.extend(dict(m) for m in turnos)
+    return resultado
 
 
 def mensajes_a_prompt(messages, etiqueta_usuario="Usuario", etiqueta_asistente="B.A.I"):

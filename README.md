@@ -109,10 +109,18 @@ python bai.py --aislamiento python # offline with the Python guard (allows switc
 ```
 
 This script:
-- Creates and activates a virtual environment
-- Installs dependencies
-- Downloads the local LLM model (`mistral-7b-instruct`)
+- Creates and activates a virtual environment (`venv/`)
+- Installs `requirements.txt`
 - Launches `bai.sh` (CLI interface)
+
+It does **not** download a model: the download block for
+`models/mistral-7b-instruct-v0.1.Q4_0.gguf` is present but commented out in
+`setup_bai.sh`. Place a GGUF file in `models/` yourself (the URL is in the
+script) or point `offline.motores.<motor>.model_path` to an existing file, then
+check it with `python -m core.diagnostico`. `bai.sh` passes its arguments to
+`bai.py` (e.g. `./bai.sh --online`). The CLI can be started from any working
+directory: configuration, history and memory paths are resolved from the
+project root.
 
 ---
 
@@ -191,16 +199,38 @@ history/
 
 ## 🔌 Adding engines (online or offline)
 
+The orchestrator (`ai_engine.py`, `model_selector.py`) is backend-agnostic: it
+only knows the contract in `core/motors/base.py` and the registry. `llama_cpp`
+is the initial local backend, not a requirement — switching to `gpt4all` (or a
+new adapter) is a configuration change. Adding an adapter never touches the
+orchestrator:
+
 1. Create `core/motors/my_engine.py` implementing the contract in `core/motors/base.py`:
    ```python
    NOMBRE = "my_engine"
    TIPO = "offline"                      # or "online"
-   def disponible(config) -> (bool, str) # library installed? model present? key set?
+   def disponible(config) -> (bool, str) # library installed? model present? key set? (no model load, no network)
    def responder(messages, config) -> str  # raise MotorError on failure, never return error text
    ```
-   Do not import heavy libraries at module level (import them inside the functions).
-2. Register it in `core/motors/registry.py` (`MOTORES["my_engine"] = "core.motors.my_engine"`)
-3. Add it to `motors_config.yaml` as `motor` or in `fallback`, with its settings under `motores`
+   Rules: import heavy libraries *inside* the functions; `messages` may contain
+   several `system` entries (identity, personal memory, language instruction) —
+   if your backend or its prompt formatter accepts a single system prompt, call
+   `consolidar_sistema(messages)` (chat backends) or `separar_sistema(messages)`
+   (plain-text backends) from `base.py` so the effective context is the same as
+   for the other adapters; offline adapters must never open network connections
+   (they run under the network guard and are discarded if they try).
+2. Register it: `MOTORES["my_engine"] = "core.motors.my_engine"` in `core/motors/registry.py`
+   (or `registry.registrar_motor(...)` at runtime).
+3. Configure it in `motors_config.yaml`:
+   ```yaml
+   offline:
+     motor: my_engine            # or add it to `fallback`
+     motores:
+       my_engine: {model_path: models/my-model.gguf, modelo: my-model}
+   ```
+`tests/test_backends.py` shows the pattern end-to-end (a fake adapter registered
+and selected purely through configuration) and checks that `llama_cpp` and
+`gpt4all` receive an equivalent effective context.
 
 ---
 

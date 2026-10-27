@@ -365,3 +365,36 @@ def test_estado_incluye_prioridad(selector_fake):
     sel = selector_fake.crear(config_local("online"))
     assert sel.estado()["prioridad"] == "local"
     assert sel.estado("offline")["prioridad"] is None
+
+
+# --------------------------------------------------------------------------- fallback_offline=False bajo prioridad local
+def test_fallback_offline_false_excluye_locales_con_cualquier_prioridad(selector_fake):
+    sel = selector_fake.crear(config_local("online"))
+    assert [c.nombre for c in sel.candidatos("online", fallback_offline=False)] == ["on_a"]
+    assert [c.nombre for c in sel.candidatos("online", fallback_offline=False, prioridad="online")] == ["on_a"]
+    assert [c.nombre for c in sel.candidatos("online", fallback_offline=False, prioridad="local")] == ["on_a"]
+    # sin el parámetro explícito, la prioridad local sigue poniendo los locales primero
+    assert [c.nombre for c in sel.candidatos("online")] == ["off_a", "off_b", "on_a"]
+
+
+def test_responder_online_explicito_suspende_y_restablece_la_guardia_incluso_con_error(selector_fake):
+    from core.network_guard import guardia_activa
+    sel = selector_fake.crear(config_local("offline"))
+    selector_fake.motores.todos["on_a"].error = RuntimeError("explota")
+    with pytest.raises(SinMotorDisponible):
+        sel.responder(mensajes_basicos(), modo="online", fallback_offline=False)
+    assert guardia_activa()
+    # y en modo offline normal la guardia permanece durante la generación
+    vista = {}
+    selector_fake.motores.todos["off_a"].responder = lambda m, c: vista.setdefault("g", guardia_activa()) and "ok"
+    sel.responder(mensajes_basicos())
+    assert vista == {"g": True}
+
+
+def test_sin_conexion_en_sesion_aislada_lo_indica(selector_fake, monkeypatch):
+    from core import aislamiento
+    monkeypatch.setattr(aislamiento, "en_namespace_aislado", lambda: True)
+    selector_fake.estado["conexion"] = False
+    sel = selector_fake.crear(config_base("offline"))
+    modulo, motivo = sel.comprobar(sel.candidatos("online", fallback_offline=False)[0])
+    assert modulo is None and "aislada a nivel de proceso" in motivo

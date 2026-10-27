@@ -147,6 +147,24 @@ class ModelSelector:
             self._guardia_sesion.desactivar()
             self._guardia_sesion = None
 
+    class _SinGuardiaSesion:
+        """Suspende la guardia de sesión durante una llamada online explícitamente autorizada."""
+
+        def __init__(self, selector):
+            self._selector = selector
+            self._suspendida = False
+
+        def __enter__(self):
+            if self._selector._guardia_sesion is not None:
+                self._selector._guardia_sesion.desactivar()
+                self._suspendida = True
+            return self
+
+        def __exit__(self, *exc):
+            if self._suspendida and self._selector._guardia_sesion is not None:
+                self._selector._guardia_sesion.activar()
+            return False
+
     def cerrar(self):
         """Libera la guardia de sesión (p. ej. al terminar de usar un selector temporal)."""
         if self._guardia_sesion is not None:
@@ -203,6 +221,10 @@ class ModelSelector:
         if prioridad not in PRIORIDADES_VALIDAS:
             raise ValueError(f"Prioridad desconocida: {prioridad!r}. Válidas: {PRIORIDADES_VALIDAS}")
         online = self._candidatos_seccion("online")
+        if fallback_offline is False:
+            # Petición explícita de "sólo motores online" (p. ej. responder_online):
+            # ninguna prioridad puede colar un backend local.
+            return online
         if prioridad == "local":
             return self._candidatos_seccion("offline") + online
         if fallback_offline is None:
@@ -240,6 +262,8 @@ class ModelSelector:
         if candidato.tipo == "online":
             host = candidato.config.get("host_conectividad") or getattr(modulo, "HOST_CONECTIVIDAD", None)
             if host and not self._comprobar_conexion(host):
+                if aislamiento.en_namespace_aislado():
+                    return None, f"sin conexión con {host} (sesión aislada a nivel de proceso)"
                 return None, f"sin conexión con {host}"
 
         return modulo, ""
@@ -276,6 +300,15 @@ class ModelSelector:
         continúa con el siguiente. Lanza SinMotorDisponible si ninguno responde.
         """
         modo = modo or self._modo
+        if modo == "online" and self._modo == "offline":
+            # Llamada online autorizada explícitamente por el llamador mientras la
+            # sesión está en offline: la guardia Python de sesión no debe bloquearla
+            # (los motores offline siguen protegidos por su guardia por llamada).
+            with self._SinGuardiaSesion(self):
+                return self._responder(messages, modo, fallback_offline, prioridad)
+        return self._responder(messages, modo, fallback_offline, prioridad)
+
+    def _responder(self, messages, modo, fallback_offline, prioridad):
         errores = []
         candidatos = self.candidatos(modo, fallback_offline=fallback_offline, prioridad=prioridad)
 

@@ -186,3 +186,50 @@ def test_interrupcion_con_ctrl_c_guarda_el_historial(cli, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Sesión finalizada" in out
     assert [m["content"] for m in cli.historial_guardado()] == ["hola", "respuesta de off_a"]
+
+
+# --------------------------------------------------------------------------- arranque desde otro directorio
+def test_rutas_de_memoria_son_absolutas_y_del_proyecto():
+    import os
+    from config.motors_config import PROJECT_ROOT
+    for ruta in (memoria.HISTORY_DIR, memoria.SESSION_FILE, memoria.MEMORY_PATH):
+        assert os.path.isabs(ruta) and ruta.startswith(str(PROJECT_ROOT))
+
+
+def test_memoria_funciona_desde_otro_cwd(tmp_path, monkeypatch):
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(tmp_path / "h"))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(tmp_path / "h" / "historial.json"))
+    (tmp_path / "otro").mkdir()
+    monkeypatch.chdir(tmp_path / "otro")
+    assert memoria.load_full_history() == []            # crea el directorio configurado, no uno en el CWD
+    assert (tmp_path / "h" / "historial.json").exists()
+    assert not (tmp_path / "otro" / "history").exists()
+    assert isinstance(memoria.get_memory_context(), str)  # perfil real del proyecto, sólo lectura
+
+
+def test_arranque_real_de_bai_desde_otro_directorio(tmp_path):
+    """Ejecuta el arranque completo (arranque + assistant) con CWD ajeno al proyecto,
+    almacenamiento temporal y aislamiento Python (sin namespace)."""
+    import subprocess
+    import sys
+    from config.motors_config import PROJECT_ROOT
+    programa = f"""
+import sys, builtins
+sys.path.insert(0, {str(PROJECT_ROOT)!r})
+import core.memory_engine as m
+m.HISTORY_DIR = {str(tmp_path / 'hist')!r}; m.SESSION_FILE = m.HISTORY_DIR + "/historial.json"
+m.MEMORY_PATH = {str(tmp_path / 'perfil.yaml')!r}
+open(m.MEMORY_PATH, "w").write("aprendido_durante_sesion: {{}}\\n")
+from core.arranque import preparar_arranque
+preparar_arranque(["--aislamiento", "python"])
+import core.assistant as a
+entradas = iter(["estado", "salir"])
+builtins.input = lambda *_: next(entradas)
+a.run_assistant()
+"""
+    r = subprocess.run([sys.executable, "-c", programa], cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    assert "Hola, Usuario" in r.stdout and "Modo actual: OFFLINE" in r.stdout and "Agur" in r.stdout
+    assert (tmp_path / "hist" / "historial.json").exists()
+    assert not (tmp_path / "history").exists() and not (tmp_path / "config").exists()

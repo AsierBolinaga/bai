@@ -85,7 +85,10 @@ def test_offline_forzado_ignora_openai_y_recorta_contexto(entorno_real, monkeypa
     no_sistema = [m for m in ultima if m["role"] != "system"]
     assert len(no_sistema) == 4  # max_mensajes_contexto offline
     assert no_sistema[-1]["content"] == "pregunta 4"
-    assert ultima[0]["content"] == "Prompt de sistema de prueba."  # contexto completo en offline
+    # contexto completo en offline: un único 'system' consolidado con identidad + memoria + idioma
+    assert [m["role"] for m in ultima].count("system") == 1
+    assert ultima[0]["content"] == ("Prompt de sistema de prueba.\n\nMemoria de prueba.\n\n"
+                                    "Responde siempre en el idioma del usuario.")
     assert len(hist) == 10
 
 
