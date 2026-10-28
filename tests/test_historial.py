@@ -167,3 +167,55 @@ def test_proteccion_no_afecta_a_otro_historial(historial, monkeypatch, tmp_path)
     assert memoria.save_chat_history([{"role": "user", "content": "x"}]) is True
     assert json.loads(otro.read_text()) == [{"role": "user", "content": "x"}]
     assert roto.read_text() == "{"
+
+
+# --------------------------------------------------------------------------- procesos nuevos con fallo persistente
+def _sesion_cli(tmp_path, entradas, historial_inamovible):
+    """Una sesión completa de la CLI real (backend controlado) en un intérprete nuevo.
+    Con historial_inamovible, CADA proceso simula que historial.json no se puede renombrar."""
+    import subprocess
+    import sys
+    from tests.test_cli import _programa_sesion
+    programa = _programa_sesion(tmp_path, entradas, tmp_path / "recibido.json")
+    if historial_inamovible:
+        programa = programa.replace("import os\n", """import os
+_real_replace = os.replace
+def _replace(origen, destino):
+    if str(origen) == m.SESSION_FILE:
+        raise OSError("no se puede renombrar (simulado)")
+    return _real_replace(origen, destino)
+os.replace = _replace
+""", 1)
+    r = subprocess.run([sys.executable, "-c", programa], cwd=str(tmp_path), capture_output=True, text=True,
+                       timeout=60, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_sesiones_nuevas_con_historial_corrupto_inamovible_no_duplican(tmp_path):
+    hist = tmp_path / "hist"
+    hist.mkdir()
+    roto = hist / "historial.json"
+    roto.write_text('[{"role": "user", "content": "valioso"}, {rot', encoding="utf-8")
+    bytes_rotos = roto.read_bytes()
+
+    for n in (1, 2, 3):
+        out = _sesion_cli(tmp_path, [f"mensaje {n}", "salir"], historial_inamovible=True)
+        assert "no tocaré" in out
+        assert roto.read_bytes() == bytes_rotos                               # intacto en cada sesión
+        rescates = list(hist.glob("historial-rescate-*.json"))
+        assert len(rescates) == 1                                             # el anterior se consolida y se borra
+        turnos = [m["content"] for m in json.loads(rescates[0].read_text(encoding="utf-8")) if m["role"] == "user"]
+        assert turnos == [f"mensaje {i}" for i in range(1, n + 1)]            # sin duplicados
+    # el contexto que recibe el motor en la 3ª sesión tampoco lleva turnos repetidos
+    recibido = json.loads((tmp_path / "recibido.json").read_text(encoding="utf-8"))
+    assert [m["content"] for m in recibido if m["role"] == "user"] == ["mensaje 1", "mensaje 2", "mensaje 3"]
+
+    # cuando el fichero vuelve a poder apartarse: se conserva como copia y todo se consolida
+    out = _sesion_cli(tmp_path, ["mensaje 4", "salir"], historial_inamovible=False)
+    assert "conservado en" in out
+    copias = list(hist.glob("historial.json.corrupto-*.bak"))
+    assert len(copias) == 1 and copias[0].read_bytes() == bytes_rotos
+    assert not list(hist.glob("historial-rescate-*.json"))
+    turnos = [m["content"] for m in json.loads(roto.read_text(encoding="utf-8")) if m["role"] == "user"]
+    assert turnos == ["mensaje 1", "mensaje 2", "mensaje 3", "mensaje 4"]

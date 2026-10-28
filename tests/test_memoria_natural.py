@@ -36,8 +36,14 @@ def _almacen_temporal(memoria_temporal):
 def hechos_en_disco():
     if not os.path.exists(memoria.FACTS_PATH):
         return {}
-    datos = yaml.safe_load(open(memoria.FACTS_PATH, encoding="utf-8")) or {}
+    with open(memoria.FACTS_PATH, encoding="utf-8") as f:
+        datos = yaml.safe_load(f) or {}
     return {clave: e["valor"] for clave, e in (datos.get("hechos") or {}).items()}
+
+
+def bytes_en_disco():
+    with open(memoria.FACTS_PATH, "rb") as f:
+        return f.read()
 
 
 # --------------------------------------------------------------------------- recordar: variantes naturales
@@ -175,10 +181,10 @@ def test_la_consulta_no_crea_el_fichero():
 # --------------------------------------------------------------------------- duplicados, conflictos y ambigüedad
 def test_duplicado_no_reescribe_y_lo_dice():
     procesar_comando_memoria("recuerda que mi gato se llama Mishi")
-    antes = open(memoria.FACTS_PATH, encoding="utf-8").read()
+    antes = bytes_en_disco()
     r = procesar_comando_memoria("recuerda que el gato se llama mishi")  # mismo hecho, otra forma
     assert "Ya lo tenía guardado" in r
-    assert open(memoria.FACTS_PATH, encoding="utf-8").read() == antes
+    assert bytes_en_disco() == antes
 
 
 def test_conflicto_no_sobreescribe_y_pide_actualizar():
@@ -835,11 +841,11 @@ def test_actualizar_la_clave_larga_nunca_toca_la_corta(viajes, frase, esperado):
     "update the fact viaje a Roma to July",
 ])
 def test_division_ambigua_pide_aclaracion_y_no_escribe(viajes, frase):
-    antes = open(memoria.FACTS_PATH, "rb").read()
+    antes = bytes_en_disco()
     r = procesar_comando_memoria(frase)
     assert "'viaje'" in r and "'viaje a Roma'" in r
     assert ("No está claro" in r) or ("not clear" in r)
-    assert open(memoria.FACTS_PATH, "rb").read() == antes
+    assert bytes_en_disco() == antes
 
 
 def test_division_unica_sigue_funcionando(viajes):
@@ -856,10 +862,10 @@ def planes():
 
 def test_lectura_natural_ambigua_con_clave_guardada_se_aclara(planes):
     """Varias divisiones con 'es' y otra que la primera nombra un hecho guardado -> aclarar."""
-    antes = open(memoria.FACTS_PATH, "rb").read()
+    antes = bytes_en_disco()
     r = procesar_comando_memoria("recuerda que ahora mi plan es viajar es lo mejor")
     assert "No está claro" in r and "'plan'" in r and "'plan es viajar'" in r
-    assert open(memoria.FACTS_PATH, "rb").read() == antes
+    assert bytes_en_disco() == antes
 
 
 def test_olvidar_sólo_la_clave_completa(viajes):
@@ -938,10 +944,10 @@ def test_apostrofo_dentro_de_palabra_no_es_una_cita():
 ])
 def test_instrucciones_contradictorias_no_cambian_nada(frase):
     procesar_comando_memoria("recuerda que mi coche es rojo")
-    antes = open(memoria.FACTS_PATH, "rb").read()
+    antes = bytes_en_disco()
     r = procesar_comando_memoria(frase)
     assert r is not None and ("contradictorias" in r or "contradictory" in r)
-    assert open(memoria.FACTS_PATH, "rb").read() == antes
+    assert bytes_en_disco() == antes
 
 
 def test_palabra_de_memoria_dentro_de_un_valor_no_es_contradiccion():
@@ -1033,10 +1039,10 @@ def test_conflicto_parcial_se_informa_con_exactitud():
 
 
 def test_ambiguedad_en_un_hecho_bloquea_toda_la_peticion(planes):
-    antes = open(memoria.FACTS_PATH, "rb").read()
+    antes = bytes_en_disco()
     r = procesar_comando_memoria("recuerda que ahora mi perro es Rex y mi plan es viajar es lo mejor")
     assert "No está claro" in r
-    assert open(memoria.FACTS_PATH, "rb").read() == antes              # ni siquiera 'perro'
+    assert bytes_en_disco() == antes              # ni siquiera 'perro'
 
 
 # =========================================================================== consultas parciales: sólo sugerencias
@@ -1119,3 +1125,210 @@ def test_cli_clave_completa_y_aclaraciones_sin_motor(memoria_temporal, selector_
     assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en julio"}
     assert all(m.llamadas == [] for m in selector_fake.motores.todos.values())
     assert selector_fake.estado["hosts"] == []
+
+
+# =========================================================================== compatibilidad con almacenes 'perfil_migrado'
+import hashlib
+
+
+def _almacen_marcado(almacen, marcador, hechos=None, clave="perfil_migrado"):
+    """Escribe un almacén como el de una versión anterior: hechos + marcador de migración."""
+    datos = {"version": 1, "hechos": hechos if hechos is not None else
+             {"gato": {"clave": "gato", "valor": "Mishi", "origen": "user_profile.yaml"}}}
+    if marcador is not None:
+        datos[clave] = marcador
+    almacen.hechos.write_text(yaml.safe_dump(datos, allow_unicode=True), encoding="utf-8")
+
+
+PERFIL_VIEJO = {"aprendido_durante_sesion": {"furgoneta": "una camper", "gato": "Mishi"}}   # furgoneta ya olvidada
+
+
+def _texto_perfil(datos=PERFIL_VIEJO):
+    return yaml.safe_dump(datos, allow_unicode=True)
+
+
+def _marcadores_compatibles():
+    texto = _texto_perfil()
+    sha = hashlib.sha256(texto.encode()).hexdigest()
+    return [
+        ("lista de huellas del perfil completo", [sha]),
+        ("una sola huella", sha),
+        ("diccionario con huella y fecha", {"sha256": sha, "fecha": "2025-01-01"}),
+        ("huella del volcado canónico", [hashlib.sha256(yaml.safe_dump(PERFIL_VIEJO, sort_keys=True).encode()).hexdigest()]),
+        ("md5 del perfil", [hashlib.md5(texto.encode()).hexdigest()]),
+        ("huellas por hoja (formato actual)", [memoria._huella(["aprendido_durante_sesion", "furgoneta"], "una camper"),
+                                               memoria._huella(["aprendido_durante_sesion", "gato"], "Mishi")]),
+        ("marcador de otra versión no reconocido", ["deadbeef"]),
+    ]
+
+
+def _casos_marcadores():
+    casos = [("perfil_migrado", d, m) for d, m in _marcadores_compatibles()]
+    # el alias 'legado_migrado' sólo existió con huellas por hoja
+    casos.append(("legado_migrado",) + _marcadores_compatibles()[5])
+    return casos
+
+
+@pytest.mark.parametrize("clave,descripcion,marcador", _casos_marcadores(), ids=lambda x: x if isinstance(x, str) and len(x) < 60 else "")
+def test_almacen_marcado_por_otra_version_conserva_hechos_y_no_resucita(_almacen_temporal, clave, descripcion, marcador):
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, marcador, clave=clave)
+    # los hechos del almacén se usan con normalidad
+    assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+    # el dato olvidado del perfil no vuelve: ni como hecho ni como contexto
+    assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+    contexto = memoria.get_memory_context()
+    assert "camper" not in contexto and contexto.count("Mishi") == 1
+    assert hechos_en_disco() == {"gato": "Mishi"}
+    # el perfil queda en copia y vacío
+    assert list(_almacen_temporal.dir.glob("user_profile.yaml.legado-*.bak"))
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}
+    # después de olvidar el último hecho heredado tampoco vuelve nada, y el marcador
+    # queda consolidado bajo 'perfil_migrado' con huellas propias
+    procesar_comando_memoria("olvida mi gato")
+    assert hechos_en_disco() == {} and memoria.get_memory_context() == ""
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    assert "perfil_migrado" in datos and "legado_migrado" not in datos
+    assert all(":" in h for h in datos["perfil_migrado"])
+    # y si alguien restaura el perfil viejo, sigue sin volver nada
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    assert memoria.migrar_perfil_legado() == 0 and hechos_en_disco() == {}
+    # pero un dato NUEVO añadido al perfil sí se importa (el marcador ajeno ya fue absorbido)
+    _almacen_temporal.perfil.write_text(_texto_perfil({"aprendido_durante_sesion": {"perro": "Rex"}}), encoding="utf-8")
+    assert memoria.migrar_perfil_legado() == 1 and hechos_en_disco() == {"perro": "Rex"}
+
+
+def test_almacen_marcado_y_perfil_con_datos_nuevos_por_hoja(_almacen_temporal):
+    """Marcador por hojas (formato actual): las hojas no marcadas SÍ son nuevas y se importan."""
+    _almacen_temporal.perfil.write_text(_texto_perfil({"aprendido_durante_sesion": {
+        "furgoneta": "una camper", "perro": "Rex"}}), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, [memoria._huella(["aprendido_durante_sesion", "furgoneta"], "una camper")])
+    assert memoria.migrar_perfil_legado() == 1
+    assert hechos_en_disco() == {"gato": "Mishi", "perro": "Rex"}
+
+
+def test_almacen_marcado_sin_perfil_funciona_sin_ruido(_almacen_temporal, capsys):
+    _almacen_marcado(_almacen_temporal, ["deadbeef"])
+    os.unlink(_almacen_temporal.perfil)
+    assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+    assert "marcado como migrado" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("contenido", [
+    "version: 1\nhechos: {}\nperfil_migrado: 3\n",
+    "version: 1\nhechos: {}\nperfil_migrado: [1, 2]\n",
+    "version: 1\nhechos: {}\nperfil_migrado: {a: {b: c}}\n",
+    "version: 1\nhechos: {}\nlegado_migrado: true\n",
+])
+def test_marcadores_con_forma_invalida_se_rechazan(_almacen_temporal, contenido):
+    _almacen_temporal.hechos.write_text(contenido, encoding="utf-8")
+    with pytest.raises(memoria.MemoriaHechosInvalida, match="migrado"):
+        memoria.cargar_hechos()
+
+
+def test_almacen_marcado_con_escritura_persistentemente_fallida(_almacen_temporal, capsys):
+    """Ni siquiera pudiendo escribir: lo olvidado no vuelve, el perfil no se reimporta y se avisa una vez."""
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, [hashlib.sha256(_texto_perfil().encode()).hexdigest()])
+    antes = (_almacen_temporal.hechos.read_bytes(), _almacen_temporal.perfil.read_bytes())
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", lambda *a: (_ for _ in ()).throw(OSError("disco de solo lectura (simulado)")))
+        for _ in range(3):
+            assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+            assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+            assert "camper" not in memoria.get_memory_context()
+    assert (_almacen_temporal.hechos.read_bytes(), _almacen_temporal.perfil.read_bytes()) == antes
+    salida = capsys.readouterr().out
+    assert salida.count("no he podido anotar las huellas") == 1
+
+
+# =========================================================================== colisiones: ningún valor heredado se pierde
+def test_colision_con_hecho_y_con_perfil_anterior_conserva_todos_los_valores(_almacen_temporal):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"coche": "azul"}})
+    assert memoria.migrar_perfil_legado() == 1
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"coche": "verde"}})   # otra versión antigua
+    assert memoria.migrar_perfil_legado() == 1
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"coche": "verde"}})   # el mismo valor: no se duplica
+    assert memoria.migrar_perfil_legado() == 0
+    assert hechos_en_disco() == {"coche": "rojo", "coche (perfil anterior)": "azul", "coche (perfil anterior 2)": "verde"}
+    # todos consultables y olvidables por separado
+    assert "azul" in procesar_comando_memoria("¿cuál es mi coche (perfil anterior)?")
+    assert "Olvidado" in procesar_comando_memoria("olvida mi coche (perfil anterior 2)")
+    assert hechos_en_disco() == {"coche": "rojo", "coche (perfil anterior)": "azul"}
+
+
+def test_colision_entre_hojas_del_propio_perfil(_almacen_temporal):
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"coche": "rojo"},
+                                        "vida_personal": {"coche": "azul", "pareja": {"nombre": "Ana"}},
+                                        "nombre": "Jon", "Coche": "verde"})
+    assert memoria.migrar_perfil_legado() == 5
+    assert sorted(hechos_en_disco().values()) == ["Ana", "Jon", "azul", "rojo", "verde"]
+    assert hechos_en_disco()["coche"] in ("rojo", "verde")   # el resto con sus padres o sufijo, nunca descartados
+
+
+# =========================================================================== procesos nuevos con fallos persistentes
+def _programa_migracion(tmp_path, entrada, perfil_no_vaciable):
+    """Proceso autónomo de memoria; con perfil_no_vaciable simula en CADA proceso
+    que el perfil no se puede reescribir (fallo persistente)."""
+    from config.motors_config import PROJECT_ROOT
+    return f"""
+import sys, os
+sys.path.insert(0, {str(PROJECT_ROOT)!r})
+import core.memory_engine as m
+m.FACTS_PATH = {str(tmp_path / 'facts.yaml')!r}
+m.MEMORY_PATH = {str(tmp_path / 'perfil.yaml')!r}
+if {perfil_no_vaciable!r}:
+    _real = m._escribir_atomico
+    def _escribir(ruta, contenido, prefijo):
+        if ruta == m.MEMORY_PATH:
+            raise OSError("perfil de solo lectura (simulado)")
+        return _real(ruta, contenido, prefijo)
+    m._escribir_atomico = _escribir
+from core.memory_commands import procesar_comando_memoria
+print(procesar_comando_memoria({entrada!r}))
+print("CONTEXTO>>>" + m.get_memory_context().replace("\\n", " | "))
+"""
+
+
+def _proceso_migracion(tmp_path, entrada, perfil_no_vaciable=True):
+    r = subprocess.run([sys.executable, "-c", _programa_migracion(tmp_path, entrada, perfil_no_vaciable)],
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_fallo_persistente_al_vaciar_el_perfil_entre_procesos(tmp_path):
+    perfil = tmp_path / "perfil.yaml"
+    perfil.write_text(yaml.safe_dump({"aprendido_durante_sesion": {"furgoneta": "una camper", "gato": "Mishi"}}))
+    texto_perfil = perfil.read_bytes()
+    out = _proceso_migracion(tmp_path, "¿cuál es mi furgoneta?")           # migra; no puede vaciar
+    assert "una camper" in out and "no he podido vaciar" in out
+    out = _proceso_migracion(tmp_path, "olvida mi furgoneta")
+    assert "Olvidado: furgoneta" in out
+    for _ in range(2):                                                    # procesos nuevos, perfil aún lleno
+        out = _proceso_migracion(tmp_path, "¿qué recuerdas?")
+        assert "furgoneta" not in out and "- gato: Mishi" in out
+        assert "camper" not in out.split("CONTEXTO>>>")[1] and out.split("CONTEXTO>>>")[1].count("Mishi") == 1
+    assert perfil.read_bytes() == texto_perfil                            # intacto mientras falla
+    copias = list(tmp_path.glob("perfil.yaml.legado-*.bak"))
+    assert len(copias) == 1                                               # una sola copia, no una por proceso
+    # el fallo desaparece: el perfil se vacía sin reimportar nada
+    out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
+    assert "furgoneta" not in out and "- gato: Mishi" in out
+    assert yaml.safe_load(perfil.read_text()) == {"aprendido_durante_sesion": {}}
+    assert "furgoneta" not in _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
+
+
+def test_almacen_perfil_migrado_entre_procesos(tmp_path):
+    perfil = tmp_path / "perfil.yaml"
+    texto = yaml.safe_dump({"aprendido_durante_sesion": {"furgoneta": "una camper", "gato": "Mishi"}})
+    perfil.write_text(texto)
+    (tmp_path / "facts.yaml").write_text(yaml.safe_dump({"version": 1,
+        "hechos": {"gato": {"clave": "gato", "valor": "Mishi"}},
+        "perfil_migrado": [hashlib.sha256(texto.encode()).hexdigest()]}))
+    out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
+    assert "- gato: Mishi" in out and "furgoneta" not in out and "marcado como migrado" in out
+    out = _proceso_migracion(tmp_path, "¿cuál es mi furgoneta?", perfil_no_vaciable=False)
+    assert "No tengo nada guardado" in out and "camper" not in out.split("CONTEXTO>>>")[1]

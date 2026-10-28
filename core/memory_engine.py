@@ -88,17 +88,43 @@ def normalizar_clave(clave):
 
 
 # --------------------------------------------------------------------------- almacén de hechos
-_CLAVES_RAIZ = {"version", "hechos", "legado_migrado"}
+# Marcadores de migración del perfil heredado: 'perfil_migrado' (nombre canónico,
+# también usado por almacenes anteriores) y 'legado_migrado' (alias). Contienen
+# huellas: de cada hoja migrada (ruta + valor) o del perfil completo.
+_CLAVES_MARCADOR = ("perfil_migrado", "legado_migrado")
+_CLAVES_RAIZ = {"version", "hechos", *_CLAVES_MARCADOR}
 _CLAVES_ENTRADA = {"clave", "valor", "actualizado", "origen"}
+
+
+def _huellas_de_marcador(nombre, valor):
+    """Acepta las formas con que se han escrito los marcadores: lista de huellas,
+    una sola huella o diccionario con huellas/listas. Cualquier otra cosa es esquema inválido."""
+    if valor is None:
+        return set()
+    if isinstance(valor, str):
+        return {valor}
+    if isinstance(valor, list) and all(isinstance(h, str) for h in valor):
+        return set(valor)
+    if isinstance(valor, dict):
+        huellas = set()
+        for v in valor.values():
+            if isinstance(v, str):
+                huellas.add(v)
+            elif isinstance(v, list) and all(isinstance(h, str) for h in v):
+                huellas.update(v)
+            else:
+                raise MemoriaHechosInvalida(f"'{nombre}' debe contener huellas (cadenas)")
+        return huellas
+    raise MemoriaHechosInvalida(f"'{nombre}' debe ser una lista de huellas")
 
 
 def _validar_almacen(datos):
     """Valida el esquema completo. Un fichero vacío es un almacén vacío; todo lo
-    demás debe ser {version: 1, hechos: {norma: {clave, valor, ...}},
-    legado_migrado: [huellas]} (legado_migrado es opcional).
-    Devuelve {"hechos": dict, "legado_migrado": set}."""
+    demás debe ser {version: 1, hechos: {norma: {clave, valor, ...}}} más, de
+    forma opcional, los marcadores de migración perfil_migrado / legado_migrado.
+    Devuelve {"hechos": dict, "perfil_migrado": set}."""
     if datos is None:
-        return {"hechos": {}, "legado_migrado": set()}
+        return {"hechos": {}, "perfil_migrado": set()}
     if not isinstance(datos, dict):
         raise MemoriaHechosInvalida(f"la raíz debe ser un diccionario, no {type(datos).__name__}")
     desconocidas = set(datos) - _CLAVES_RAIZ
@@ -121,10 +147,10 @@ def _validar_almacen(datos):
         if not isinstance(entrada.get("clave"), str) or not isinstance(entrada.get("valor"), str):
             raise MemoriaHechosInvalida(f"entrada inválida para '{clave}': faltan 'clave'/'valor'")
         validados[clave] = dict(entrada)
-    legado = datos.get("legado_migrado") or []
-    if not isinstance(legado, list) or not all(isinstance(h, str) for h in legado):
-        raise MemoriaHechosInvalida("'legado_migrado' debe ser una lista de huellas")
-    return {"hechos": validados, "legado_migrado": set(legado)}
+    # 'legado_migrado' (alias) siempre contuvo huellas por hoja: se etiquetan como tales.
+    marcadores = {h if ":" in h else "hoja:" + h for h in _huellas_de_marcador("legado_migrado", datos.get("legado_migrado"))}
+    marcadores |= _huellas_de_marcador("perfil_migrado", datos.get("perfil_migrado"))
+    return {"hechos": validados, "perfil_migrado": marcadores}
 
 
 def _validar_hechos(datos):
@@ -134,7 +160,7 @@ def _validar_hechos(datos):
 def _leer_almacen():
     """Lee y valida FACTS_PATH sin efectos secundarios."""
     if not os.path.exists(FACTS_PATH):
-        return {"hechos": {}, "legado_migrado": set()}
+        return {"hechos": {}, "perfil_migrado": set()}
     try:
         with open(FACTS_PATH, "r", encoding="utf-8") as f:
             datos = yaml.safe_load(f)
@@ -175,16 +201,17 @@ def _escribir_atomico(ruta, contenido, prefijo):
         raise
 
 
-def guardar_hechos(hechos, legado_migrado=None):
+def guardar_hechos(hechos, perfil_migrado=None):
     """Escritura atómica del almacén completo. Lanza OSError si no se puede
     escribir; en ese caso el fichero anterior queda intacto. Si no se indican,
     se conservan las huellas de migración ya guardadas (así olvidar un hecho
-    heredado nunca permite reimportarlo)."""
-    if legado_migrado is None:
-        legado_migrado = _leer_almacen()["legado_migrado"]
+    heredado nunca permite reimportarlo). Los marcadores se escriben siempre
+    bajo 'perfil_migrado' (los alias leídos se consolidan ahí)."""
+    if perfil_migrado is None:
+        perfil_migrado = _leer_almacen()["perfil_migrado"]
     datos = {"version": VERSION_ESQUEMA, "hechos": hechos}
-    if legado_migrado:
-        datos["legado_migrado"] = sorted(legado_migrado)
+    if perfil_migrado:
+        datos["perfil_migrado"] = sorted(perfil_migrado)
     contenido = yaml.safe_dump(datos, allow_unicode=True, sort_keys=True)
     _escribir_atomico(FACTS_PATH, contenido, ".facts-")
 
@@ -217,15 +244,92 @@ def _aplanar_perfil(datos):
             for ruta, valor in _hojas_perfil(datos)]
 
 
-def _huella(ruta, valor_str):
-    """Identidad estable de una hoja del perfil (ruta + valor)."""
-    return hashlib.sha256(("/".join(ruta) + "\0" + valor_str).encode("utf-8")).hexdigest()
-
-
 def _texto_legado(valor):
     if isinstance(valor, bool):
         return "sí" if valor else "no"
     return str(valor)
+
+
+def _huella(ruta, valor_str):
+    """Identidad estable de una hoja del perfil (ruta + valor)."""
+    return "hoja:" + hashlib.sha256(("/".join(ruta) + "\0" + valor_str).encode("utf-8")).hexdigest()
+
+
+def _huella_perfil(texto):
+    """Identidad del perfil completo tal y como está en disco."""
+    return "perfil:" + hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def _huellas_perfil_completo(texto, perfil):
+    """Huellas (sin etiqueta) con las que otras versiones pudieron marcar el perfil ENTERO."""
+    formas = [texto, texto.strip(),
+              yaml.safe_dump(perfil, allow_unicode=True, sort_keys=True),
+              yaml.safe_dump(perfil, sort_keys=True), yaml.safe_dump(perfil)]
+    huellas = set()
+    for forma in formas:
+        for algoritmo in ("sha256", "sha1", "md5"):
+            huellas.add(hashlib.new(algoritmo, forma.encode("utf-8")).hexdigest())
+    return huellas
+
+
+def _marcadores_ajenos(marcadores):
+    """Marcadores escritos por otra versión (sin etiqueta 'hoja:'/'perfil:')."""
+    return {m for m in marcadores if ":" not in m}
+
+
+def _clasificar_hojas(texto, perfil, hojas, marcadores):
+    """(índices de `hojas` ya migradas, motivo) según los marcadores del almacén:
+    - 'hoja:' -> esa hoja (ruta + valor) ya se importó;
+    - 'perfil:' o marcador ajeno que coincide con el perfil -> el perfil entero;
+    - marcadores ajenos que no coinciden con nada conocido -> otra versión marcó
+      el perfil como migrado: se considera migrado ENTERO (no se reimporta nada,
+      así un hecho olvidado nunca vuelve; el perfil queda en copia de seguridad).
+    Los marcadores ajenos se sustituyen por huellas propias en la primera
+    escritura que los absorbe (ver migrar_perfil_legado), de modo que los datos
+    añadidos al perfil DESPUÉS sí se importan."""
+    if not marcadores:
+        return set(), None
+    por_hoja = {i for i, (ruta, valor) in enumerate(hojas) if _huella(ruta, valor) in marcadores}
+    todas = set(range(len(hojas)))
+    if _huella_perfil(texto) in marcadores:
+        return todas, "perfil completo"
+    ajenos = _marcadores_ajenos(marcadores)
+    if ajenos & _huellas_perfil_completo(texto, perfil):
+        return todas, "perfil completo"
+    if ajenos:
+        return todas, "marcador de otra versión"
+    return por_hoja, ("hojas" if por_hoja else None)
+
+
+def _leer_perfil_texto():
+    """(texto, dict) del perfil heredado, o (None, None) si no existe / no es legible / no es un dict."""
+    if not os.path.exists(MEMORY_PATH):
+        return None, None
+    try:
+        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
+            texto = f.read()
+        perfil = yaml.safe_load(texto)
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
+        _avisar_una_vez(("perfil-ilegible", MEMORY_PATH),
+                        f"[B.A.I] Aviso: no puedo leer el perfil heredado ({e}); lo dejo como está.")
+        return None, None
+    return (texto, perfil) if isinstance(perfil, dict) else (None, None)
+
+
+def _clave_libre(nombre, hechos, valor):
+    """Clave para un valor heredado que choca con un hecho ya guardado: se conserva
+    aparte ('X (perfil anterior)', 'X (perfil anterior 2)', ...), nunca se descarta.
+    Devuelve None si ese mismo valor ya está guardado bajo alguna de esas claves."""
+    base = clave_sin_articulo(nombre)
+    n = 1
+    while True:
+        candidata = f"{base} (perfil anterior)" if n == 1 else f"{base} (perfil anterior {n})"
+        norma = normalizar_clave(candidata)
+        if norma not in hechos:
+            return candidata
+        if hechos[norma]["valor"].strip().lower() == valor.strip().lower():
+            return None
+        n += 1
 
 
 def _nombres_legado(hojas):
@@ -265,16 +369,7 @@ def _avisar_una_vez(clave, texto):
 
 def _leer_perfil():
     """Perfil heredado como dict, o None si no existe / no se puede leer / no es un dict."""
-    if not os.path.exists(MEMORY_PATH):
-        return None
-    try:
-        with open(MEMORY_PATH, "r", encoding="utf-8") as f:
-            perfil = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
-        _avisar_una_vez(("perfil-ilegible", MEMORY_PATH),
-                        f"[B.A.I] Aviso: no puedo leer el perfil heredado ({e}); lo dejo como está.")
-        return None
-    return perfil if isinstance(perfil, dict) else None
+    return _leer_perfil_texto()[1]
 
 
 def _vaciar_perfil():
@@ -288,10 +383,15 @@ def migrar_perfil_legado():
     guarda en facts.yaml EN LA MISMA escritura atómica que los hechos. Así:
     - una hoja ya migrada nunca se vuelve a importar, aunque vaciar el perfil
       falle o el perfil se edite después (un hecho heredado olvidado no resucita);
-    - si la escritura de hechos falla no se ha importado nada y el perfil sigue intacto.
+    - los almacenes marcados por versiones anteriores (perfil_migrado con la
+      huella del perfil completo u otro formato) se respetan: sus hechos se
+      conservan y su perfil no se reimporta;
+    - si la escritura de hechos falla no se ha importado nada y el perfil sigue intacto;
+    - un valor heredado cuya clave choca con un hecho distinto se guarda aparte
+      ('X (perfil anterior)'), nunca se descarta.
     Orden: copia de respaldo del perfil -> hechos + huellas (atómico) -> perfil vaciado.
     Devuelve el número de hechos nuevos importados."""
-    perfil = _leer_perfil()
+    texto, perfil = _leer_perfil_texto()
     if not perfil:
         return 0
     hojas = _aplanar_perfil(perfil)
@@ -304,18 +404,33 @@ def migrar_perfil_legado():
         _avisar_una_vez(("no-migro", MEMORY_PATH, FACTS_PATH),
                         f"[B.A.I] Aviso: no migro el perfil heredado porque la memoria de hechos no está disponible ({e}).")
         return 0
-    hechos, migradas = dict(almacen["hechos"]), set(almacen["legado_migrado"])
+    hechos, migradas = dict(almacen["hechos"]), set(almacen["perfil_migrado"])
 
+    ya_migradas, motivo = _clasificar_hojas(texto, perfil, hojas, migradas)
     nombres = _nombres_legado(hojas)
-    pendientes = [(ruta, valor, nombre) for (ruta, valor), (nombre, _) in zip(hojas, nombres)
-                  if _huella(ruta, valor) not in migradas]
+    pendientes = [(ruta, valor, nombre) for i, ((ruta, valor), (nombre, _)) in enumerate(zip(hojas, nombres))
+                  if i not in ya_migradas]
+    huellas_nuevas = {_huella(ruta, valor) for i, (ruta, valor) in enumerate(hojas) if i in ya_migradas} - migradas
+    if motivo in ("perfil completo", "marcador de otra versión"):
+        # El perfil entero queda identificado con huellas propias y los marcadores
+        # ajenos se absorben: lo que se añada al perfil más adelante sí se importará.
+        huellas_nuevas.add(_huella_perfil(texto))
+        migradas -= _marcadores_ajenos(migradas)
+        _avisar_una_vez(("marcado", MEMORY_PATH, _huella_perfil(texto)),
+                        f"[B.A.I] El perfil heredado ya está marcado como migrado ({motivo}): no reimporto sus "
+                        f"{len(hojas)} dato(s); sus hechos siguen en la memoria y el perfil se conserva en copia.")
+
     if not pendientes:
-        # Todo ya migrado: sólo falta (re)intentar vaciar el perfil. Nunca se reimporta nada.
-        try:
-            _vaciar_perfil()
-        except OSError as e:
-            _avisar_una_vez(("no-vacio", MEMORY_PATH),
-                            f"[B.A.I] Aviso: no puedo vaciar el perfil ya migrado ({e}); se ignora, sus datos ya son hechos.")
+        # Todo ya migrado: sólo falta anotar huellas que faltaran y (re)intentar vaciar el perfil.
+        if huellas_nuevas:
+            try:
+                _respaldar_perfil(texto)
+                guardar_hechos(hechos, migradas | huellas_nuevas)
+            except OSError as e:
+                _avisar_una_vez(("no-huellas", FACTS_PATH),
+                                f"[B.A.I] Aviso: no he podido anotar las huellas de migración ({e}); no se reimporta nada.")
+                return 0
+        _vaciar_perfil_con_respaldo(texto, solo_si_hace_falta=True)
         return 0
 
     importados = 0
@@ -327,19 +442,18 @@ def migrar_perfil_legado():
         if norma in hechos and hechos[norma]["valor"].strip().lower() == valor.strip().lower():
             continue
         if norma in hechos:
-            # Conflicto con un hecho ya guardado: se conserva el heredado aparte, sin sobreescribir.
-            nombre = f"{clave_sin_articulo(nombre)} (perfil anterior)"
-            norma = normalizar_clave(nombre)
-            if norma in hechos:
+            # Conflicto con un hecho ya guardado: se conserva el heredado aparte, sin sobreescribir ni descartar.
+            nombre = _clave_libre(nombre, hechos, valor)
+            if nombre is None:
                 continue
+            norma = normalizar_clave(nombre)
         hechos[norma] = {"clave": clave_sin_articulo(nombre), "valor": valor,
                          "actualizado": _ahora(), "origen": "user_profile.yaml"}
         importados += 1
 
-    respaldo = MEMORY_PATH + _SUFIJO_RESPALDO.format(ts=datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
     try:
-        shutil.copyfile(MEMORY_PATH, respaldo)
-        guardar_hechos(hechos, migradas)          # hechos + huellas: todo o nada
+        respaldo = _respaldar_perfil(texto)
+        guardar_hechos(hechos, migradas | huellas_nuevas)          # hechos + huellas: todo o nada
     except OSError as e:
         _avisar_una_vez(("no-migrado", MEMORY_PATH),
                         f"[B.A.I] Aviso: no he podido migrar el perfil heredado ({e}); no se ha importado nada "
@@ -356,10 +470,44 @@ def migrar_perfil_legado():
     return importados
 
 
-def huellas_migradas():
-    """Huellas de las hojas del perfil ya migradas (None si el almacén no se puede leer)."""
+def _respaldar_perfil(texto):
+    """Copia de seguridad del perfil antes de tocarlo. Si ya existe una copia
+    con exactamente este contenido (de este u otro proceso) se reutiliza, así
+    un fallo persistente no genera una copia por turno ni por sesión.
+    Devuelve la ruta de la copia. Lanza OSError si no se puede copiar."""
+    directorio = os.path.dirname(MEMORY_PATH) or "."
+    base = os.path.basename(MEMORY_PATH)
+    datos = texto.encode("utf-8")
     try:
-        return _leer_almacen()["legado_migrado"]
+        for nombre in sorted(os.listdir(directorio)):
+            if nombre.startswith(base + ".legado-") and nombre.endswith(".bak"):
+                ruta = os.path.join(directorio, nombre)
+                with open(ruta, "rb") as f:
+                    if f.read() == datos:
+                        return ruta
+    except OSError:
+        pass
+    respaldo = MEMORY_PATH + _SUFIJO_RESPALDO.format(ts=datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+    shutil.copyfile(MEMORY_PATH, respaldo)
+    return respaldo
+
+
+def _vaciar_perfil_con_respaldo(texto, solo_si_hace_falta=False):
+    """Vacía un perfil cuyo contenido ya está migrado, conservando antes una copia."""
+    if solo_si_hace_falta and not texto.strip():
+        return
+    try:
+        _respaldar_perfil(texto)
+        _vaciar_perfil()
+    except OSError as e:
+        _avisar_una_vez(("no-vacio", MEMORY_PATH),
+                        f"[B.A.I] Aviso: no puedo vaciar el perfil ya migrado ({e}); se ignora, sus datos ya son hechos.")
+
+
+def huellas_migradas():
+    """Marcadores de migración del almacén (None si no se puede leer)."""
+    try:
+        return _leer_almacen()["perfil_migrado"]
     except (MemoriaHechosInvalida, ErrorLecturaMemoria):
         return None
 
@@ -544,7 +692,6 @@ def _apartar_corrupto(path, motivo):
 def load_full_history():
     messages = []
     archivos_a_borrar = []
-    reescribir = True   # sólo se reescribe historial.json si se ha podido leer (o apartar) sin pérdida
     _HISTORIAL_PROTEGIDO.pop(SESSION_FILE, None)
 
     os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -555,10 +702,9 @@ def load_full_history():
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 messages.extend(_turnos_validos(json.load(f)))
         except (ValueError, UnicodeDecodeError) as e:       # JSON roto o estructura inesperada
-            reescribir = _apartar_corrupto(SESSION_FILE, e)
+            _apartar_corrupto(SESSION_FILE, e)                # si no se puede apartar, queda protegido
         except OSError as e:                                  # no se puede leer: no se toca
             _proteger_historial(f"no puedo leer el historial ({e})")
-            reescribir = False
 
     # Cargar sesiones anteriores y de rescate (los ficheros ilegibles se conservan sin tocar)
     for file in sorted(os.listdir(HISTORY_DIR)):
@@ -573,15 +719,18 @@ def load_full_history():
 
     messages = messages[-MAX_MESSAGES:]
 
-    if reescribir and not save_chat_history(messages):
+    # Consolidación: todo lo cargado se escribe en el destino de esta sesión
+    # (historial.json o, si está protegido, su fichero de rescate) y sólo
+    # entonces se borran los ficheros ya absorbidos. Así un historial dañado
+    # que siga sin poder apartarse no hace que las sesiones se dupliquen.
+    if not save_chat_history(messages):
         return messages   # no se borran las sesiones antiguas si no se ha podido consolidar
 
-    if reescribir:
-        for path in archivos_a_borrar:
-            try:
-                os.remove(path)
-            except Exception as e:
-                print(f"[B.A.I] Error borrando {path}: {e}")
+    for path in archivos_a_borrar:
+        try:
+            os.remove(path)
+        except Exception as e:
+            print(f"[B.A.I] Error borrando {path}: {e}")
 
     return messages
 
@@ -589,19 +738,25 @@ def load_full_history():
 def _contexto_perfil():
     """Texto con los datos del perfil (user_profile.yaml) que AÚN no se han
     migrado a hechos. Nunca lanza: un perfil ausente o dañado no debe impedir
-    conversar. Las hojas ya migradas no se inyectan (si se olvidaron como
-    hecho, no deben volver a llegar al motor por esta vía)."""
-    perfil = _leer_perfil()
+    conversar. Las hojas ya migradas (por huella, por marcador del perfil
+    completo o por marcador de otra versión) no se inyectan: si se olvidaron
+    como hecho, no deben volver a llegar al motor por esta vía."""
+    texto_perfil, perfil = _leer_perfil_texto()
     if not perfil:
         return []
+    hojas = _hojas_perfil(perfil)
     migradas = huellas_migradas()
     if migradas is None:
-        migradas = set()      # almacén ilegible: no se puede migrar ni olvidar, el perfil sigue visible
+        ya = set()            # almacén ilegible: no se puede migrar ni olvidar, el perfil sigue visible
+    else:
+        planas = [(ruta, ", ".join(_texto_legado(v) for v in valor) if isinstance(valor, list) else _texto_legado(valor))
+                  for ruta, valor in hojas]
+        ya, _ = _clasificar_hojas(texto_perfil, perfil, planas, migradas)
     texto = []
-    for ruta, valor in _hojas_perfil(perfil):
-        valor_str = ", ".join(_texto_legado(v) for v in valor) if isinstance(valor, list) else _texto_legado(valor)
-        if _huella(ruta, valor_str) in migradas:
+    for i, (ruta, valor) in enumerate(hojas):
+        if i in ya:
             continue
+        valor_str = ", ".join(_texto_legado(v) for v in valor) if isinstance(valor, list) else _texto_legado(valor)
         nombre = str(ruta[-1]).capitalize()
         if isinstance(valor, list):
             texto.append(f"{nombre} incluye: {valor_str}.")

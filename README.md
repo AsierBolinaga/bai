@@ -405,16 +405,24 @@ backend (online or offline):
   moved once into `facts.yaml` on first use — after a byte-for-byte backup
   `user_profile.yaml.legado-<timestamp>.bak` — so it becomes retrievable,
   editable and forgettable like any other fact. Each migrated profile entry
-  is fingerprinted (`legado_migrado` in `facts.yaml`, written atomically with
-  the facts), so a forgotten legacy fact is never re-imported or re-injected,
-  even if emptying the profile fails or the old profile is restored later. If
-  the fact store is damaged or the write fails, nothing is imported, the
-  profile is left untouched (and still reaches the context) and B.A.I says so.
+  is fingerprinted (`perfil_migrado` in `facts.yaml`, written atomically with
+  the facts; `legado_migrado` is read as an alias), so a forgotten legacy fact
+  is never re-imported or re-injected, even if emptying the profile fails or
+  the old profile is restored later. Stores whose `perfil_migrado` was written
+  by another version (a whole-profile digest, or any marker B.A.I cannot
+  recognize) are honoured: their facts stay usable and the marked profile is
+  not re-imported (it is kept as a backup copy). A legacy value whose key
+  collides with a different stored value is kept as `X (perfil anterior)`,
+  `X (perfil anterior 2)`, … — never discarded. If the fact store is damaged
+  or the write fails, nothing is imported, the profile is left untouched (and
+  still reaches the context) and B.A.I says so.
 - The conversation history is also protected: an unreadable or malformed
   `historial.json` is kept as `historial.json.corrupto-<timestamp>.bak`; if
   it cannot be moved it is left untouched and the session is saved to
-  `historial-rescate-<timestamp>.json` (merged on the next start) instead of
-  overwriting it. History writes are atomic.
+  `historial-rescate-<timestamp>.json` instead of overwriting it; every start
+  consolidates the previous rescue file into the current one (or into
+  `historial.json` once it can be moved aside), so sessions are never
+  duplicated. History writes are atomic.
 
 ---
 
