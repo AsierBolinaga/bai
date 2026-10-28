@@ -53,15 +53,7 @@ MENSAJES = {
         "no_existia": "No tenía nada guardado sobre '{clave}'.",
         "olvidar_conflicto": ("Tengo guardado que {clave} es {anterior}, no '{valor}'. "
                               "Si quieres que lo olvide de todos modos dime 'olvida {clave}'."),
-        "sugerencias": ("No tengo nada guardado exactamente como '{clave}'. Quizá te refieres a: {lista}. "
-                        "Pregúntame por la clave completa."),
-        "ambiguo": ("Eso puede referirse a varios hechos que tengo guardados: {lista}. "
-                    "Dímelo con la clave completa para no cambiar el equivocado."),
-        "ambiguo_division": ("No sé dónde acaba la clave y empieza el valor ({lista}). "
-                             "Dímelo como 'recuerda que ahora <clave> es <valor>' o '<clave>: <valor>'."),
-        "contradictorio": ("La petición se contradice (guardar y olvidar a la vez, o dos valores para la misma "
-                           "clave). No he cambiado nada: dímelo en peticiones separadas."),
-        "incompleto": "Te he entendido a medias: ¿qué debo {accion}? Dímelo como '{ejemplo}'.",
+        "sugerencias": "No tengo nada guardado como '{clave}'. Quizá te refieres a: {lista}.",
         "recuperado": "Sí, lo recuerdo: {clave} es {valor}.",
         "confirmado": "Sí: {clave} es {valor}.",
         "desmentido": "No exactamente: tengo guardado que {clave} es {anterior}.",
@@ -88,8 +80,17 @@ MENSAJES = {
                    "desconocido ({error}). No lo modificaré para no perder datos; corrígelo o renómbralo y vuelve a intentarlo."),
         "ilegible": ("No puedo leer la memoria persistente ({ruta}): {error}. "
                      "No he modificado nada; revisa los permisos del fichero."),
-        "no_guardado": ("No he podido guardar el cambio ({error}). "
-                        "La memoria anterior queda intacta y la operación NO se ha realizado."),
+        "no_guardado": ("No he podido guardar el cambio ({error}). La memoria anterior queda intacta: "
+                        "NINGÚN cambio de esta petición se ha guardado."),
+        "aclarar_clave": ("No está claro a qué dato te refieres ({opciones}). Para no tocar el dato equivocado no he "
+                          "cambiado nada; dímelo con la clave completa: 'recuerda que ahora <clave> es <valor>'."),
+        "aclarar_ejemplo": ("Eso parece un ejemplo, así que no toco la memoria. "
+                            "Si es una petición real, repítemela sin 'por ejemplo'."),
+        "contradictorio": ("Tu petición contiene instrucciones contradictorias o mezcladas, así que no he cambiado nada. "
+                           "Pídeme una sola operación de memoria por mensaje."),
+        "aclarar_consulta": "¿Qué quieres que consulte? Pregúntame '¿cuál es mi <clave>?' o '¿qué recuerdas?' para verlo todo.",
+        "sugerencias_consulta": ("No tengo nada guardado exactamente como '{clave}'. Quizá te refieres a: {lista}. "
+                                 "Pregúntamelo con el nombre completo."),
     },
     "en": {
         "guardado": "Fact stored: {clave} = {valor}. I will remember it across sessions.",
@@ -102,15 +103,7 @@ MENSAJES = {
         "no_existia": "I had nothing stored about '{clave}'.",
         "olvidar_conflicto": ("I have {clave} = {anterior}, not '{valor}'. "
                               "Say 'forget {clave}' if you want me to drop it anyway."),
-        "sugerencias": ("I have nothing stored exactly as '{clave}'. Did you mean: {lista}? "
-                        "Ask me with the full key."),
-        "ambiguo": ("That could refer to several stored facts: {lista}. "
-                    "Say the full key so I don't change the wrong one."),
-        "ambiguo_division": ("I can't tell where the key ends and the value starts ({lista}). "
-                             "Say it like 'remember that now <key> is <value>' or '<key>: <value>'."),
-        "contradictorio": ("The request contradicts itself (store and forget at once, or two values for the same "
-                           "key). Nothing changed: say it as separate requests."),
-        "incompleto": "I only half understood: what should I {accion}? Say it like '{ejemplo}'.",
+        "sugerencias": "I have nothing stored as '{clave}'. Did you mean: {lista}?",
         "recuperado": "Yes, I remember: {clave} is {valor}.",
         "confirmado": "Yes: {clave} is {valor}.",
         "desmentido": "Not exactly: I have {clave} = {anterior}.",
@@ -135,8 +128,16 @@ MENSAJES = {
         "danada": ("I can't use persistent memory: the file {ruta} is corrupted or has an unknown format ({error}). "
                    "I won't touch it so no data is lost; fix or rename it and try again."),
         "ilegible": "I can't read persistent memory ({ruta}): {error}. Nothing was modified; check the file permissions.",
-        "no_guardado": ("I couldn't save the change ({error}). "
-                        "Previous memory is intact and the operation was NOT performed."),
+        "no_guardado": ("I couldn't save the change ({error}). Previous memory is intact: "
+                        "NO change from this request was saved."),
+        "aclarar_clave": ("It is not clear which fact you mean ({opciones}). To avoid changing the wrong one I changed "
+                          "nothing; say it with the full key: 'remember that now <key> is <value>'."),
+        "aclarar_ejemplo": "That looks like an example, so I won't touch memory. If it is a real request, repeat it without 'for example'.",
+        "contradictorio": ("Your request contains contradictory or mixed instructions, so I changed nothing. "
+                           "Ask for one memory operation per message."),
+        "aclarar_consulta": "What should I look up? Ask 'what is my <key>?' or 'what do you remember?' to see everything.",
+        "sugerencias_consulta": ("I have nothing stored exactly as '{clave}'. Did you mean: {lista}? "
+                                 "Ask me with the full name."),
     },
 }
 
@@ -201,7 +202,7 @@ _V_GENERICO_STORE = (r"(?P<verbo>guarda|guardate|graba|almacena|anota|anotame|ap
                      r"record|jot\s+down|keep)")
 
 _P_RECORDAR = [
-    re.compile(_INI + _V_RECORDAR + r"(?:\s+" + _OBJ + r")?" + r"(?:\s+(?:que|that|esto|this|de\s+que))?"
+    re.compile(_INI + _V_RECORDAR + r"(?:\s*,)?(?:\s+" + _OBJ + r")?" + r"(?:\s+(?:que|that|esto|this|de\s+que))?"
                r"\s*:?\s+(?P<hecho>.+?)" + _FIN, re.S),
     re.compile(_INI + _V_GENERICO_STORE + r"(?:\s+(?:esto|this|lo\s+siguiente|the\s+following))?\s*[:,]?\s*"
                r"(?:\s*" + _OBJ + r")" + r"(?:\s+(?:que|that|de\s+que|esto|this))?\s*:?\s+(?P<hecho>.+?)" + _FIN, re.S),
@@ -216,7 +217,9 @@ _P_NEGADO = re.compile(
 
 # Actualización explícita: "recuerda que ahora X es Y" (en _P_RECORDAR) o verbo genérico + objeto de memoria.
 _V_ACTUALIZAR = r"(?P<verbo>actualiza|cambia|corrige|modifica|rectifica|update|change|set|correct|fix)"
-_P_ACTUALIZAR = re.compile(_INI + _V_ACTUALIZAR + r"\s+" + _OBJ + r"(?:\s+(?:de|about|que|that))?\s*[:,]?\s+(?P<resto>.+?)" + _FIN, re.S)
+# actualiza en tu memoria X a Y | X: Y   /   corrige tu memoria: X es Y | que X es Y
+_P_ACTUALIZAR = re.compile(_INI + _V_ACTUALIZAR + r"\s+" + _OBJ + r"(?:\s+de|\s+about)?"
+                           r"(?P<marca>\s*[:,]\s*|\s+(?:que|that)\s+|\s+)(?P<resto>.+?)" + _FIN, re.S)
 
 # Olvidar: verbos inequívocos (objeto opcional) o genéricos con objeto de memoria.
 _V_OLVIDAR = (r"(?P<verbo>olvidate\s+de|olvidate|olvida|ya\s+no\s+recuerdes|deja\s+de\s+recordar|"
@@ -259,40 +262,16 @@ _P_RECUPERAR = [
                r"(?:\s+guardados|\s+que\s+recuerdas)?" + _FIN_PREGUNTA, re.S),
 ]
 
-# Petición reconocible pero incompleta ("recuerda", "olvida", "remember that", "actualiza en tu memoria"):
-# se contesta localmente con una aclaración; nunca llega a un motor.
-_P_INCOMPLETO = [
-    (re.compile(_INI + _V_RECORDAR + r"(?:\s+" + _OBJ + r")?(?:\s+(?:que|that|esto|this|de\s+que))?\s*:?" + _FIN, re.S),
-     "recordar"),
-    (re.compile(_INI + _V_GENERICO_STORE + r"(?:\s+(?:esto|this))?\s*[:,]?\s*" + _OBJ + r"(?:\s+(?:que|that|de\s+que))?\s*:?" + _FIN, re.S),
-     "recordar"),
-    (re.compile(_INI + _V_ACTUALIZAR + r"\s+" + _OBJ + r"(?:\s+(?:que|that|de|about))?\s*[:,]?" + _FIN, re.S), "actualizar"),
-    (re.compile(_INI + _V_OLVIDAR + r"(?:\s+" + _OBJ + r")?(?:\s+(?:que|that|de|about))?\s*:?" + _FIN, re.S), "olvidar"),
-    (re.compile(_INI + _V_GENERICO_FORGET + r"\s+" + _OBJ + r"(?:\s+(?:que|that|de|about))?\s*:?" + _FIN, re.S), "olvidar"),
+# Separadores clave/valor, por prioridad. Se usa el primer tipo presente y se
+# enumeran TODAS sus posiciones para resolver la clave completa antes de escribir.
+_SEP_HECHO = [
+    r"\s+se\s+llaman?\s+",
+    r"'s\s+name\s+is\s+",
+    r"\s+(?:es|son)\s+",
+    r"\s+(?:is|are)\s+",
+    r"\s*[:=]\s*",
 ]
-_EJEMPLOS = {
-    "es": {"recordar": ("recordar", "recuerda que <clave> es <valor>"),
-           "actualizar": ("actualizar", "recuerda que ahora <clave> es <valor>"),
-           "olvidar": ("olvidar", "olvida <clave>")},
-    "en": {"recordar": ("remember", "remember that <key> is <value>"),
-           "actualizar": ("update", "remember that now <key> is <value>"),
-           "olvidar": ("forget", "forget <key>")},
-}
-# Instrucciones contradictorias dentro de una misma petición (guardar y olvidar/no guardar a la vez).
-_P_CONTRADICCION = re.compile(
-    r"\b(?:olvida(?:lo|te)?|no\s+(?:lo\s+)?(?:guardes|recuerdes|memorices|apuntes|anotes)|borra(?:lo)?|elimina(?:lo)?|"
-    r"forget(?:\s+it)?|don'?t\s+(?:save|store|remember|keep)(?:\s+it)?|do\s+not\s+(?:save|store|remember)|"
-    r"delete\s+it|remove\s+it|erase\s+it)\b")
-_P_CONTRADICCION_OLVIDO = re.compile(
-    r"\b(?:recuerda|memoriza|guarda|aprende|remember|memorize|save|store|keep)\b")
-
-_P_PAREJA = [  # clave <sep> valor, dentro del hecho
-    r"^(?P<clave>.+?)\s+se\s+llaman?\s+(?P<valor>.+)$",
-    r"^(?P<clave>.+?)'s\s+name\s+is\s+(?P<valor>.+)$",
-    r"^(?P<clave>.+?)\s+(?:es|son)\s+(?P<valor>.+)$",
-    r"^(?P<clave>.+?)\s+(?:is|are)\s+(?P<valor>.+)$",
-    r"^(?P<clave>[^:=]+?)\s*[:=]\s*(?P<valor>.+)$",
-]
+_SEP_A = [r"\s*[:=]\s*", r"\s+(?:a|por|to)\s+"]   # "X a Y": 'a' también aparece dentro de claves ("viaje a Roma")
 # Un hecho negado nunca se guarda tal cual ("mi coche no es rojo" no define ningún valor).
 _P_NEGACION_HECHO = re.compile(
     r"^(?:no|nunca|jamas|not|never|ya\s+no)\b"
@@ -301,95 +280,87 @@ _P_NEGACION_HECHO = re.compile(
     r"|\b(?:is|are|was|were)\s*(?:n't|not)\b|\b(?:isn't|aren't|wasn't|weren't)\b", re.S)
 _P_AHORA = re.compile(r"^(?:ahora|a\s+partir\s+de\s+ahora|desde\s+ahora|now|from\s+now\s+on)[,]?\s+(.+)$", re.S)
 _P_SEPARADOR_HECHOS = re.compile(r"\s*(?:;|,\s+y\s+|\s+y\s+|,\s+and\s+|\s+and\s+)\s*", re.S)
+# Ejemplos: nunca son peticiones reales.
+_P_EJEMPLO = re.compile(r"\b(?:por\s+ejemplo|como\s+ejemplo|ejemplo|supongamos|imagina|hipoteticamente|"
+                        r"for\s+example|for\s+instance|as\s+an\s+example|example|suppose|hypothetically)\b"
+                        r"|\b(?:p\.\s*ej\.?|e\.\s*g\.?)(?=\s|,|$)")
+# Comillas de cita (no apóstrofos dentro de palabras como "Ana's" o "don't").
+_P_CITA = re.compile(r"[\"«»“”]|<<|>>|(?:^|\s)['‘`]|['’`](?:\s|$|[.,;:!?])")
+# Otra operación de memoria encadenada a la petición ("...y olvídalo", "..., no lo guardes"):
+_P_CONTRADICCION = re.compile(
+    r"(?:^(?:y|e|pero|and|but)\s+|[,;]\s*(?:(?:y|e|pero|and|but|then|luego)\s+)?"
+    r"|\s(?:y|e|pero|aunque|luego|despues|and|but|then|though)\s+)"
+    r"(?:no\s+lo\s+|no\s+la\s+|no\s+|nunca\s+|don'?t\s+|do\s+not\s+|never\s+)?"
+    r"\b(?:recuerda(?:lo|la)?|recuerdes|acuerdate|olvida(?:lo|la)?|olvides|olvidate|guarda(?:lo|la)?|guardes|"
+    r"borra(?:lo|la)?|borres|elimina(?:lo|la)?|elimines|memoriza(?:lo|la)?|memorices|"
+    r"remember|forget|save|store|delete|remove|erase)\b")
 
 
-_SEPARADORES_PAREJA = [r"\s+se\s+llaman?\s+", r"'s\s+name\s+is\s+", r"\s+(?:es|son)\s+", r"\s+(?:is|are)\s+", r"\s*[:=]\s*"]
-_SEPARADORES_A = [r"\s+(?:a|por|to)\s+"]
-
-
-class ClaveAmbigua(Exception):
-    """Varias claves encajan con la petición: hay que preguntar. `guardadas`
-    indica si son hechos existentes (o sólo divisiones posibles del texto)."""
-
-    def __init__(self, claves, guardadas=True):
-        super().__init__(", ".join(claves))
-        self.claves = claves
-        self.guardadas = guardadas
-
-
-def _candidatos(original, plano, separadores):
-    """Todas las divisiones posibles clave/valor, en orden de preferencia
-    (separador más específico primero; dentro de cada uno, de izquierda a derecha)."""
-    vistos = set()
-    resultado = []
+def _divisiones(original, plano, separadores):
+    """Todas las formas de partir el texto en (clave, valor) con el primer tipo
+    de separador presente. [] si no hay ninguna pareja clara."""
     for sep in separadores:
+        candidatos = []
         for m in re.finditer(sep, plano):
             clave, valor = original[:m.start()], original[m.end():]
-            if normalizar_clave(clave) and limpiar_valor(valor) and normalizar_clave(clave) not in vistos:
-                vistos.add(normalizar_clave(clave))
-                resultado.append((clave, valor))
-    return resultado
+            if normalizar_clave(clave) and limpiar_valor(valor):
+                candidatos.append((clave, valor))
+        if candidatos:
+            return candidatos
+    return []
 
 
 def _parse_hecho(original, plano):
-    """Separa '<clave> es <valor>' (y variantes) SIN consultar el almacén:
-    la división más a la izquierda. Devuelve (clave, valor) o None."""
-    c = _candidatos(original, plano, _SEPARADORES_PAREJA)
-    return c[0] if c else None
+    """Primera pareja (clave, valor) — sólo para lecturas; las escrituras
+    resuelven todas las divisiones posibles con _resolver()."""
+    candidatos = _divisiones(original, plano, _SEP_HECHO)
+    return candidatos[0] if candidatos else None
 
 
-def _resolver_pareja(original, plano, separadores, exigir_unica=False):
-    """Elige la división clave/valor resolviendo la clave COMPLETA contra el
-    almacén: si exactamente una división coincide con un hecho guardado, es
-    ésa ("viaje a Roma" frente a "viaje"); si varias coinciden -> ClaveAmbigua;
-    si ninguna: la primera (o ClaveAmbigua si `exigir_unica` y hay varias).
-    Devuelve None si no hay ninguna pareja clara. Lee el almacén (puede lanzar)."""
-    pareja, _ = _resolver(original, plano, separadores, exigir_unica)
-    return pareja
-
-
-def _resolver(original, plano, separadores, exigir_unica=False):
-    """Como _resolver_pareja, devolviendo además si la decidió el almacén."""
-    candidatos = _candidatos(original, plano, separadores)
-    if not candidatos:
-        return None, False
-    existentes = memory_engine.claves_existentes([c for c, _ in candidatos])
-    if len(existentes) == 1:
-        return next(p for p in candidatos if p[0] == existentes[0]), True
-    if len(existentes) > 1:
-        raise ClaveAmbigua([clave_sin_articulo(c) for c in existentes])
-    if exigir_unica and len(candidatos) > 1:
-        raise ClaveAmbigua([clave_sin_articulo(c) for c, _ in candidatos], guardadas=False)
-    return candidatos[0], False
-
-
-def _parse_hechos(original, plano):
-    """Uno o varios hechos ("X es A y Y es B"), resolviendo cada clave contra
-    el almacén. Sólo se divide cuando TODAS las partes son parejas claras; si
-    no, se interpreta como un único hecho. Lee el almacén (puede lanzar)."""
-    partes = []
-    pos = 0
+def _parse_hechos(original, plano, separadores=_SEP_HECHO):
+    """Lista de hechos; cada hecho es la lista de sus divisiones posibles.
+    "X es A y Y es B" se divide sólo si TODAS las partes son parejas claras."""
+    partes, pos = [], 0
     for m in _P_SEPARADOR_HECHOS.finditer(plano):
         partes.append((pos, m.start()))
         pos = m.end()
     partes.append((pos, len(plano)))
     if len(partes) > 1:
-        parejas = [_resolver_pareja(original[a:b], plano[a:b], _SEPARADORES_PAREJA) for a, b in partes]
-        if all(p is not None for p in parejas):
-            return parejas
-    pareja = _resolver_pareja(original, plano, _SEPARADORES_PAREJA)
-    return [pareja] if pareja is not None else None
+        divisiones = [_divisiones(original[a:b], plano[a:b], separadores) for a, b in partes]
+        if all(divisiones):
+            return divisiones
+    completo = _divisiones(original, plano, separadores)
+    return [completo] if completo else None
 
 
-def _claves_repetidas(parejas):
-    """True si la misma clave aparece con valores distintos (petición contradictoria)."""
-    valores = {}
-    for clave, valor in parejas:
-        norma = normalizar_clave(clave_sin_articulo(clave))
-        v = limpiar_valor(valor).strip().lower()
-        if valores.setdefault(norma, v) != v:
-            return True
-    return False
+def _resolver(candidatos, hechos, siempre_ambiguo_si_varios=False):
+    """Elige la división cuya clave es la COMPLETA antes de escribir.
+    ('ok', (clave, valor)) o ('ambiguo', [claves posibles]).
+    - Una sola división: sin duda.
+    - Varias: la lectura natural es la primera, salvo que otra división
+      nombre un hecho ya guardado (p. ej. "viaje" y "viaje a Roma") -> aclarar.
+    - Con separadores que también aparecen dentro de claves ('a', 'por', 'to')
+      varias divisiones son siempre ambiguas."""
+    if len(candidatos) == 1:
+        return "ok", candidatos[0]
+    existentes = [c for c in candidatos if normalizar_clave(c[0]) in hechos]
+    if not siempre_ambiguo_si_varios and (not existentes or existentes == [candidatos[0]]):
+        return "ok", candidatos[0]
+    return "ambiguo", [clave_sin_articulo(c[0]) for c in candidatos]
+
+
+def _problema_en_carga(idioma, original, plano):
+    """Motivo (mensaje) para NO mutar la memoria con este texto, o None.
+    Se comprueba sobre todo el contenido de la petición antes de resolver nada."""
+    if _entre_comillas(original) or _P_CITA.search(original.replace("’", "'")):
+        return _msg(idioma, "aclarar_citado")
+    if _P_EJEMPLO.search(plano):
+        return _msg(idioma, "aclarar_ejemplo")
+    if _P_CONTRADICCION.search(plano):
+        return _msg(idioma, "contradictorio")
+    if _P_NEGACION_HECHO.search(plano):
+        return _msg(idioma, "aclarar_negado")
+    return None
 
 
 def _recorte(original, plano, m, grupo):
@@ -412,27 +383,40 @@ def _con_almacen(idioma, operacion):
         return _msg(idioma, "ilegible", ruta=memory_engine.FACTS_PATH, error=e)
     except OSError as e:
         return _msg(idioma, "no_guardado", error=e)
-    except ClaveAmbigua as e:
-        return _msg(idioma, "ambiguo" if e.guardadas else "ambiguo_division",
-                    lista=", ".join(f"'{c}'" for c in e.claves))
 
 
-def _hacer_recordar(idioma, clave, valor):
-    estado, anterior = memory_engine.recordar_hecho(clave, valor)
-    visible = clave_sin_articulo(clave)
-    if estado == "guardado":
-        return _msg(idioma, "guardado", clave=visible, valor=limpiar_valor(valor))
+def _formatear_resultado(idioma, estado, clave, valor, anterior):
+    if estado in ("guardado", "creado"):
+        return _msg(idioma, estado, clave=clave, valor=valor)
     if estado == "duplicado":
-        return _msg(idioma, "duplicado", clave=visible, valor=anterior)
-    return _msg(idioma, "conflicto", clave=visible, anterior=anterior, valor=limpiar_valor(valor))
+        return _msg(idioma, "duplicado", clave=clave, valor=anterior)
+    if estado == "conflicto":
+        return _msg(idioma, "conflicto", clave=clave, anterior=anterior, valor=valor)
+    return _msg(idioma, "actualizado", clave=clave, valor=valor, anterior=anterior)
 
 
-def _hacer_actualizar(idioma, clave, valor):
-    estado, anterior = memory_engine.actualizar_hecho(clave, valor)
-    visible = clave_sin_articulo(clave)
-    if estado == "creado":
-        return _msg(idioma, "creado", clave=visible, valor=limpiar_valor(valor))
-    return _msg(idioma, "actualizado", clave=visible, valor=limpiar_valor(valor), anterior=anterior)
+def _escribir_hechos(idioma, hechos_candidatos, modo, separadores_ambiguos=False):
+    """Resuelve la clave completa de cada hecho contra lo guardado y escribe
+    TODOS en una única operación atómica. Si algo es ambiguo o contradictorio
+    no se escribe nada. Debe ejecutarse dentro de _con_almacen."""
+    hechos = memory_engine.cargar_hechos()
+    elegidos = []
+    for candidatos in hechos_candidatos:
+        estado, dato = _resolver(candidatos, hechos, separadores_ambiguos)
+        if estado == "ambiguo":
+            return _msg(idioma, "aclarar_clave", opciones=", ".join(f"'{c}'" for c in dato))
+        elegidos.append(dato)
+    vistos, unicos = {}, []
+    for clave, valor in elegidos:
+        norma = normalizar_clave(clave)
+        if norma in vistos:
+            if vistos[norma] != limpiar_valor(valor).strip().lower():
+                return _msg(idioma, "contradictorio")      # la misma clave con dos valores
+            continue
+        vistos[norma] = limpiar_valor(valor).strip().lower()
+        unicos.append((clave, valor))
+    resultados = memory_engine.aplicar_cambios([(modo, c, v) for c, v in unicos])
+    return "\n".join(_formatear_resultado(idioma, *r) for r in resultados)
 
 
 def _hacer_olvidar(idioma, clave):
@@ -456,47 +440,32 @@ def _hacer_listar(idioma):
     return "\n".join(lineas)
 
 
-def _hacer_consultar(idioma, clave):
+def _sugerir(idioma, clave, codigo_si_nada):
+    """Coincidencias parciales: sólo como sugerencia (sin valores), nunca como hecho confirmado."""
+    parecidos = memory_engine.buscar_hechos(clave)
     visible = clave_sin_articulo(clave)
+    if parecidos:
+        lista = ", ".join(f"'{c}'" for c, _ in parecidos)
+        return _msg(idioma, "sugerencias_consulta", clave=visible, lista=lista)
+    return _msg(idioma, codigo_si_nada, clave=visible)
+
+
+def _hacer_consultar(idioma, clave):
     resultado = memory_engine.obtener_hecho(clave)
     if resultado is not None:
         return _msg(idioma, "recuperado", clave=resultado[0], valor=resultado[1])
-    parecidos = memory_engine.buscar_hechos(clave)
-    if parecidos:   # coincidencias parciales: sólo sugerencias, nunca un hecho confirmado
-        lista = ", ".join(f"'{c}'" for c, _ in parecidos)
-        return _msg(idioma, "sugerencias", clave=visible, lista=lista)
-    return _msg(idioma, "no_se", clave=visible)
+    return _sugerir(idioma, clave, "no_se")
 
 
 def _hacer_comparar(idioma, clave, valor):
     """'¿recuerdas que X es Y?' -> confirma, desmiente o dice que no lo sabe. Nunca guarda."""
-    visible = clave_sin_articulo(clave)
     resultado = memory_engine.obtener_hecho(clave)
     if resultado is None:
-        return _msg(idioma, "no_se", clave=visible)
+        return _sugerir(idioma, clave, "no_se")
     guardado = resultado[1]
     if guardado.strip().lower() == limpiar_valor(valor).strip().lower():
         return _msg(idioma, "confirmado", clave=resultado[0], valor=guardado)
     return _msg(idioma, "desmentido", clave=resultado[0], anterior=guardado)
-
-
-def _hacer_recordar_varios(idioma, parejas, actualizar):
-    """Varios hechos en una petición con UNA escritura atómica: o se persisten
-    todos los que procede escribir o ninguno (y entonces no se confirma nada).
-    Los conflictos no se escriben y se informan uno a uno."""
-    respuestas = []
-    for visible, estado, valor, anterior in memory_engine.aplicar_hechos(parejas, reemplazar=actualizar):
-        if estado == "guardado":
-            respuestas.append(_msg(idioma, "guardado", clave=visible, valor=valor))
-        elif estado == "creado":
-            respuestas.append(_msg(idioma, "creado", clave=visible, valor=valor))
-        elif estado == "actualizado":
-            respuestas.append(_msg(idioma, "actualizado", clave=visible, valor=valor, anterior=anterior))
-        elif estado == "duplicado":
-            respuestas.append(_msg(idioma, "duplicado", clave=visible, valor=valor))
-        else:
-            respuestas.append(_msg(idioma, "conflicto", clave=visible, anterior=anterior, valor=valor))
-    return "\n".join(respuestas)
 
 
 # --------------------------------------------------------------------------- intentos por operación
@@ -519,15 +488,12 @@ def _intentar_recuperar(original, plano):
         if interno:
             resto = resto[interno.start(1):interno.end(1)]
             return _con_almacen(idioma, lambda: _hacer_consultar(idioma, resto))
+        pareja = _parse_hecho(resto, resto_plano)
+        if pareja is not None and not _P_NEGACION_HECHO.search(resto_plano):
+            return _con_almacen(idioma, lambda: _hacer_comparar(idioma, pareja[0], pareja[1]))
         if not normalizar_clave(resto):
             return _con_almacen(idioma, lambda: _hacer_listar(idioma))
-
-        def consultar():
-            pareja = None if _P_NEGACION_HECHO.search(resto_plano) else _resolver_pareja(resto, resto_plano, _SEPARADORES_PAREJA)
-            if pareja is not None:
-                return _hacer_comparar(idioma, pareja[0], pareja[1])
-            return _hacer_consultar(idioma, resto)
-        return _con_almacen(idioma, consultar)
+        return _con_almacen(idioma, lambda: _hacer_consultar(idioma, resto))
 
     m = _P_RECUPERAR[3].match(plano)
     if m:
@@ -549,6 +515,8 @@ def _intentar_negado(original, plano):
         return None
     idioma = _idioma(m.group("verbo"))
     hecho, hecho_plano = _recorte(original, plano, m, "hecho")
+    if hecho and _P_CONTRADICCION.search(hecho_plano):
+        return _msg(idioma, "contradictorio")
     pareja = _parse_hecho(hecho, hecho_plano) if hecho else None
     clave = pareja[0] if pareja else (hecho if hecho and normalizar_clave(hecho) else None)
 
@@ -591,27 +559,30 @@ def _intentar_olvidar(original, plano):
 
     if resto_compacto in _PRONOMBRES:
         return _msg(idioma, "aclarar_olvidar")
-    if _entre_comillas(resto):
-        return _msg(idioma, "aclarar_citado")
-    if _P_CONTRADICCION_OLVIDO.search(resto_plano):
-        return _msg(idioma, "contradictorio")
-    if _P_NEGACION_HECHO.search(resto_plano):
-        return _msg(idioma, "aclarar_negado")
+    problema = _problema_en_carga(idioma, resto, resto_plano)
+    if problema:
+        return problema
 
-    def olvidar():
-        pareja = _resolver_pareja(resto, resto_plano, _SEPARADORES_PAREJA)
-        if pareja is None:
-            return _hacer_olvidar(idioma, resto)          # sólo coincidencia EXACTA; si no, sugerencias
-        clave, valor = pareja
-        visible = clave_sin_articulo(clave)
-        resultado = memory_engine.obtener_hecho(clave)
-        if resultado is None:
-            return _msg(idioma, "no_existia", clave=visible)
-        if resultado[1].strip().lower() != limpiar_valor(valor).strip().lower():
-            return _msg(idioma, "olvidar_conflicto", clave=visible, anterior=resultado[1], valor=limpiar_valor(valor))
-        memory_engine.olvidar_hecho(clave)
-        return _msg(idioma, "olvidado", clave=visible, valor=resultado[1])
-    return _con_almacen(idioma, olvidar)
+    candidatos = _divisiones(resto, resto_plano, _SEP_HECHO)
+    if candidatos:
+        def olvidar_comprobando():
+            # Sólo se borra la clave COMPLETA y sólo si el valor coincide.
+            estado, dato = _resolver(candidatos, memory_engine.cargar_hechos())
+            if estado == "ambiguo":
+                return _msg(idioma, "aclarar_clave", opciones=", ".join(f"'{c}'" for c in dato))
+            clave, valor = dato
+            visible = clave_sin_articulo(clave)
+            resultado = memory_engine.obtener_hecho(clave)
+            if resultado is None:
+                return _msg(idioma, "no_existia", clave=visible)
+            if resultado[1].strip().lower() != limpiar_valor(valor).strip().lower():
+                return _msg(idioma, "olvidar_conflicto", clave=visible,
+                            anterior=resultado[1], valor=limpiar_valor(valor))
+            memory_engine.olvidar_hecho(clave)
+            return _msg(idioma, "olvidado", clave=visible, valor=resultado[1])
+        return _con_almacen(idioma, olvidar_comprobando)
+
+    return _con_almacen(idioma, lambda: _hacer_olvidar(idioma, resto))
 
 
 def _intentar_actualizar(original, plano):
@@ -620,30 +591,22 @@ def _intentar_actualizar(original, plano):
         return None
     idioma = _idioma(m.group("verbo"))
     resto, resto_plano = _recorte(original, plano, m, "resto")
-    if _entre_comillas(resto):
-        return _msg(idioma, "aclarar_citado")
-    if _P_CONTRADICCION.search(resto_plano):
-        return _msg(idioma, "contradictorio")
-    if _P_NEGACION_HECHO.search(resto_plano):
-        return _msg(idioma, "aclarar_negado")
-
-    def actualizar():
-        # 1) '<clave> es/: <valor>' decidido por el almacén (separador explícito y clave completa existente)
-        pareja, por_almacen = _resolver(resto, resto_plano, _SEPARADORES_PAREJA)
-        if pareja is not None and por_almacen:
-            return _hacer_recordar_varios(idioma, [pareja], actualizar=True)
-        # 2) '<clave> a/por/to <valor>': la clave completa se resuelve contra el almacén; si nada
-        #    encaja, manda el separador explícito (es/:) y, si no lo hay y caben varias
-        #    divisiones, se pregunta en lugar de adivinar.
-        pareja_a, por_almacen_a = _resolver(resto, resto_plano, _SEPARADORES_A, exigir_unica=pareja is None)
-        if pareja_a is not None and (por_almacen_a or pareja is None):
-            pareja = pareja_a
-        if pareja is None:
+    problema = _problema_en_carga(idioma, resto, resto_plano)
+    if problema:
+        return problema
+    if m.group("marca").strip():
+        # "corrige tu memoria: X es Y" / "actualiza tu memoria que X es Y": uno o varios hechos
+        hechos = _parse_hechos(resto, resto_plano)
+        if hechos is None:
             return _msg(idioma, "aclarar_actualizar")
-        if _entre_comillas(pareja[0]) or _entre_comillas(pareja[1]):
-            return _msg(idioma, "aclarar_citado")
-        return _hacer_recordar_varios(idioma, [pareja], actualizar=True)
-    return _con_almacen(idioma, actualizar)
+        return _con_almacen(idioma, lambda: _escribir_hechos(idioma, hechos, "actualizar"))
+    # "actualiza en tu memoria X a Y" / "X: Y": 'a/por/to' también aparece dentro de claves,
+    # así que varias divisiones posibles siempre se aclaran (la forma 'X: Y' es inequívoca).
+    candidatos = _divisiones(resto, resto_plano, _SEP_A)
+    if not candidatos:
+        return _msg(idioma, "aclarar_actualizar")
+    return _con_almacen(idioma, lambda: _escribir_hechos(idioma, [candidatos], "actualizar",
+                                                          separadores_ambiguos=True))
 
 
 def _intentar_recordar(original, plano):
@@ -653,55 +616,47 @@ def _intentar_recordar(original, plano):
             continue
         idioma = _idioma(m.group("verbo"))
         hecho, hecho_plano = _recorte(original, plano, m, "hecho")
-        if _entre_comillas(hecho):
-            # 'recuerda que "X es Y"': un ejemplo citado -> aclarar, nunca guardar a ciegas.
-            return _msg(idioma, "aclarar_citado")
         # "recuerda que ahora X es Y" es una actualización explícita (se permite reemplazar)
         ahora = _P_AHORA.match(hecho_plano)
         actualizar = ahora is not None
         if actualizar:
             hecho = hecho[ahora.start(1):ahora.end(1)]
             hecho_plano = hecho_plano[ahora.start(1):ahora.end(1)]
-        if _P_CONTRADICCION.search(hecho_plano):
-            return _msg(idioma, "contradictorio")
-        if _P_NEGACION_HECHO.search(hecho_plano):
-            return _msg(idioma, "aclarar_negado")
-
-        def recordar():
-            parejas = _parse_hechos(hecho, hecho_plano)
-            if parejas is None:
-                return _msg(idioma, "aclarar_hecho")
-            if _claves_repetidas(parejas):
-                return _msg(idioma, "contradictorio")
-            return _hacer_recordar_varios(idioma, parejas, actualizar)
-        return _con_almacen(idioma, recordar)
+        problema = _problema_en_carga(idioma, hecho, hecho_plano)
+        if problema:
+            return problema
+        hechos = _parse_hechos(hecho, hecho_plano)
+        if hechos is None:
+            return _msg(idioma, "aclarar_hecho")
+        modo = "actualizar" if actualizar else "recordar"
+        return _con_almacen(idioma, lambda: _escribir_hechos(idioma, hechos, modo))
     return None
+
+
+# Peticiones de memoria reconocibles pero incompletas ("recuerda", "olvídalo",
+# "borra de tu memoria", "¿recuerdas?"): se aclaran LOCALMENTE, nunca van a un motor.
+_COLA_VACIA = r"(?:\s+(?:que|that|de\s+que|de|about|esto|this|eso|lo|it))?\s*[:,]?" 
+_P_INCOMPLETO = [
+    (re.compile(_INI + r"(?:" + _V_RECORDAR + r"|(?P<v2>recuerdalo|recuerdala|memorizalo|memorizala|remember\s+it)"
+                r"|" + _V_GENERICO_STORE.replace("?P<verbo>", "?P<v3>") + r"\s*" + _OBJ + r")"
+                + _COLA_VACIA + _FIN, re.S), "aclarar_hecho"),
+    (re.compile(_INI + r"(?:" + _V_OLVIDAR + r"|(?P<v2>olvidalo|olvidala|borralo\s+de\s+tu\s+memoria)"
+                r"|" + _V_GENERICO_FORGET.replace("?P<verbo>", "?P<v3>") + r"\s+" + _OBJ + r")"
+                + _COLA_VACIA + _FIN, re.S), "aclarar_olvidar"),
+    (re.compile(_INI + _V_ACTUALIZAR + r"\s+" + _OBJ + _COLA_VACIA + _FIN, re.S), "aclarar_actualizar"),
+    (re.compile(_INI + _PREG + r"(?:no\s+)?(?P<verbo>te\s+acuerdas(?:\s+de)?|recuerdas|do\s+you\s+remember|"
+                r"don'?t\s+you\s+remember|que\s+sabes\s+de|what\s+do\s+you\s+know\s+about|"
+                r"cual\s+es\s+mi|what\s+is\s+my|what's\s+my)" + _FIN_PREGUNTA, re.S), "aclarar_consulta"),
+]
 
 
 def _intentar_incompleto(original, plano):
-    """Petición de memoria reconocible pero sin el dato: aclaración local."""
-    for patron, accion in _P_INCOMPLETO:
+    for patron, codigo in _P_INCOMPLETO:
         m = patron.match(plano)
         if m:
-            idioma = _idioma(m.group("verbo"))
-            verbo, ejemplo = _EJEMPLOS[idioma][accion]
-            return _msg(idioma, "incompleto", accion=verbo, ejemplo=ejemplo)
+            verbo = next((g for g in m.groups() if g), plano)
+            return _msg(_idioma(verbo), codigo)
     return None
-
-
-def _reconocible(texto):
-    """True si `texto` tiene forma de petición de memoria (sin ejecutarla)."""
-    plano = _plano(texto.strip())
-    patrones = ([p for p in _P_RECUPERAR] + [_P_NEGADO] + _P_OLVIDAR + [_P_ACTUALIZAR] + _P_RECORDAR
-                + [p for p, _ in _P_INCOMPLETO])
-    return any(p.match(plano) for p in patrones)
-
-
-def _sin_comillas(texto):
-    texto = texto.strip()
-    if texto.startswith("<<") and texto.endswith(">>"):
-        return texto[2:-2]
-    return texto[1:-1]
 
 
 # --------------------------------------------------------------------------- entrada pública
@@ -716,13 +671,7 @@ def procesar_comando_memoria(texto):
     if not isinstance(texto, str):
         return None
     original = texto.strip()
-    if not original:
-        return None
-    if _entre_comillas(original):
-        # Un ejemplo entrecomillado reconocible se rechaza localmente (nunca se ejecuta ni se envía a un motor).
-        interior = _sin_comillas(original)
-        if _reconocible(interior):
-            return _msg(_idioma(_plano(interior)), "aclarar_citado")
+    if not original or _entre_comillas(original):
         return None
     plano = _plano(original)
 
@@ -733,11 +682,10 @@ def procesar_comando_memoria(texto):
 
     # Un mensaje con forma de pregunta nunca escribe, actualiza ni olvida nada.
     if plano.startswith("¿") or plano.rstrip(" .!").endswith("?"):
-        return None
+        return _intentar_incompleto(original, plano) if _P_INCOMPLETO[3][0].match(plano) else None
 
-    # Las incompletas van primero: sus patrones exigen que no haya nada tras el verbo.
-    for intentar in (_intentar_incompleto, _intentar_negado, _intentar_olvidar, _intentar_actualizar,
-                     _intentar_recordar):
+    for intentar in (_intentar_negado, _intentar_olvidar, _intentar_actualizar, _intentar_recordar,
+                     _intentar_incompleto):
         respuesta = intentar(original, plano)
         if respuesta is not None:
             return respuesta

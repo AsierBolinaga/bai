@@ -76,9 +76,12 @@ def test_historial_ilegible_no_se_sobreescribe(historial, monkeypatch, capsys):
 
     monkeypatch.setattr("builtins.open", abrir)
     assert memoria.load_full_history() == []
+    assert memoria.save_chat_history([{"role": "user", "content": "nuevo"}]) is True   # la CLI guarda después
     monkeypatch.setattr("builtins.open", real_open)
     assert json.loads(fichero.read_text(encoding="utf-8")) == [{"role": "user", "content": "valioso"}]
-    assert "no lo modificaré" in capsys.readouterr().out
+    rescates = list(historial.glob("historial-rescate-*.json"))
+    assert len(rescates) == 1 and json.loads(rescates[0].read_text()) == [{"role": "user", "content": "nuevo"}]
+    assert "no tocaré" in capsys.readouterr().out
 
 
 def test_guardado_atomico_y_fallo_de_escritura_sin_perdida(historial, capsys):
@@ -112,52 +115,55 @@ def test_cli_sobrevive_a_un_historial_que_no_se_puede_guardar(monkeypatch, tmp_p
     assert "Agur" in out and "no he podido guardar el historial" in out
 
 
-def test_historial_corrupto_inamovible_no_se_sobreescribe_al_guardar(historial, capsys):
-    """Si el corrupto no se puede apartar, la sesión se guarda en un fichero nuevo y el corrupto queda intacto."""
-    roto = historial / "historial.json"
-    roto.write_text("{no es json", encoding="utf-8")
-    bytes_rotos = roto.read_bytes()
-    real = os.replace
-
-    def sin_renombrar(src, dst):
-        if str(src) == str(roto):
-            raise OSError("sin permiso para renombrar (simulado)")
-        return real(src, dst)
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", sin_renombrar)
-        assert memoria.load_full_history() == []
-        assert roto.read_bytes() == bytes_rotos
-        assert memoria.save_chat_history([{"role": "user", "content": "nuevo"}]) is True
-    assert roto.read_bytes() == bytes_rotos                                 # conservado
-    nuevos = list(historial.glob("historial.nuevo-*.json"))
-    assert len(nuevos) == 1 and json.loads(nuevos[0].read_text(encoding="utf-8")) == [{"role": "user", "content": "nuevo"}]
-    out = capsys.readouterr().out
-    assert "no puedo apartarlo" in out and "se conserva" in out
-    # una vez apartado (ahora sí se puede), se vuelve a guardar en la ruta normal y el nuevo se consolida
-    assert memoria.load_full_history() == [{"role": "user", "content": "nuevo"}]
-    assert list(historial.glob("historial.json.corrupto-*.bak"))[0].read_bytes() == bytes_rotos
-    assert memoria.save_chat_history([{"role": "user", "content": "otro"}]) is True
-    assert json.loads(roto.read_text(encoding="utf-8")) == [{"role": "user", "content": "otro"}]
-
-
-def test_cli_completa_conserva_el_historial_corrupto_inamovible(monkeypatch, tmp_path, capsys):
+def test_corrupto_sin_respaldo_posible_sobrevive_a_los_guardados_de_la_cli(historial, monkeypatch, capsys):
+    """historial.json dañado + no se puede renombrar: ni la carga ni los guardados
+    posteriores de la CLI lo sobreescriben; la sesión va a un fichero de rescate."""
     import builtins
     import core.assistant as assistant
-    roto = tmp_path / "historial.json"
-    roto.write_text("[{truncado", encoding="utf-8")
+    roto = historial / "historial.json"
+    roto.write_text('[{"role": "user", "content": "valioso"}, {rot', encoding="utf-8")
     bytes_rotos = roto.read_bytes()
-    monkeypatch.setattr(memoria, "HISTORY_DIR", str(tmp_path))
-    monkeypatch.setattr(memoria, "SESSION_FILE", str(roto))
-    real = os.replace
-    monkeypatch.setattr(os, "replace", lambda s, d: (_ for _ in ()).throw(OSError("simulado")) if str(s) == str(roto) else real(s, d))
+    real_replace = os.replace
+
+    def replace(origen, destino):
+        if str(origen) == str(roto):                     # apartar el corrupto falla
+            raise OSError("no se puede renombrar (simulado)")
+        return real_replace(origen, destino)
+
+    monkeypatch.setattr(os, "replace", replace)
     monkeypatch.setattr(assistant, "chat_history", memoria.load_full_history())
     monkeypatch.setattr(assistant, "describir_estado", lambda: "estado de prueba")
-    monkeypatch.setattr(assistant, "ask", lambda texto, hist: (hist.extend([{"role": "user", "content": texto},
-                                                                             {"role": "assistant", "content": "ok"}]), "ok")[1])
-    entradas = iter(["hola", "salir"])
-    monkeypatch.setattr(builtins, "input", lambda *_: next(entradas))
-    assistant.run_assistant()
-    assert roto.read_bytes() == bytes_rotos
-    nuevos = list(tmp_path.glob("historial.nuevo-*.json"))
-    assert len(nuevos) == 1 and [m["content"] for m in json.loads(nuevos[0].read_text())] == ["hola", "ok"]
+    monkeypatch.setattr(assistant, "ask", lambda texto, hist: (hist.extend([
+        {"role": "user", "content": texto}, {"role": "assistant", "content": "ok"}]), "ok")[1])
+    entradas = ["hola", "salir"]
+    monkeypatch.setattr(builtins, "input", lambda *_: entradas.pop(0))
+    assistant.run_assistant()                             # guarda tras el turno y al salir
+    assert roto.read_bytes() == bytes_rotos               # intacto byte a byte
+    rescates = list(historial.glob("historial-rescate-*.json"))
+    assert len(rescates) == 1
+    assert json.loads(rescates[0].read_text(encoding="utf-8")) == [
+        {"role": "user", "content": "hola"}, {"role": "assistant", "content": "ok"}]
+    assert "no tocaré" in capsys.readouterr().out
+
+    # Siguiente arranque, ya con permisos: el corrupto se aparta y el rescate se consolida
+    monkeypatch.setattr(os, "replace", real_replace)
+    mensajes = memoria.load_full_history()
+    assert mensajes == [{"role": "user", "content": "hola"}, {"role": "assistant", "content": "ok"}]
+    copias = list(historial.glob("historial.json.corrupto-*.bak"))
+    assert len(copias) == 1 and copias[0].read_bytes() == bytes_rotos
+    assert not list(historial.glob("historial-rescate-*.json"))
+    assert json.loads(roto.read_text(encoding="utf-8")) == mensajes
+
+
+def test_proteccion_no_afecta_a_otro_historial(historial, monkeypatch, tmp_path):
+    """La protección es por ruta: otro SESSION_FILE sano se guarda con normalidad."""
+    roto = historial / "historial.json"
+    roto.write_text("{", encoding="utf-8")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", lambda *a: (_ for _ in ()).throw(OSError("simulado")))
+        memoria.load_full_history()
+    otro = tmp_path / "otro.json"
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(otro))
+    assert memoria.save_chat_history([{"role": "user", "content": "x"}]) is True
+    assert json.loads(otro.read_text()) == [{"role": "user", "content": "x"}]
+    assert roto.read_text() == "{"

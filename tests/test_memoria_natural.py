@@ -33,16 +33,10 @@ def _almacen_temporal(memoria_temporal):
     return memoria_temporal
 
 
-def _almacen_temporal_bytes():
-    with open(memoria.FACTS_PATH, "rb") as f:
-        return f.read()
-
-
 def hechos_en_disco():
     if not os.path.exists(memoria.FACTS_PATH):
         return {}
-    with open(memoria.FACTS_PATH, encoding="utf-8") as f:
-        datos = yaml.safe_load(f) or {}
+    datos = yaml.safe_load(open(memoria.FACTS_PATH, encoding="utf-8")) or {}
     return {clave: e["valor"] for clave, e in (datos.get("hechos") or {}).items()}
 
 
@@ -128,9 +122,11 @@ NO_COMANDOS = [
     # negaciones de OTRAS cosas (las de memoria tienen respuesta local: ver test_negaciones_*)
     "no quiero cambiar a modo online",
     "no me gusta el frío",
-    # ejemplos entrecomillados que NO son peticiones de memoria (los que lo son: test_cita_reconocible_*)
-    '"hola"',
-    "«pasa a modo online»",
+    # ejemplos entrecomillados
+    '"recuerda que mi coche es rojo"',
+    "'olvida mi coche'",
+    "«recuerda que mi coche es rojo»",
+    "<<forget my car>>",
     # comando incrustado en otra frase
     "Explica qué significa 'recuerda que X es Y'",
     "cuando te diga recuerda que algo es algo, ¿qué harás?",
@@ -148,6 +144,7 @@ NO_COMANDOS = [
     "toma nota: la furgoneta es una camper",
     "save that my van is a camper",
     "note down that my van is a camper",
+    "make a note of this: my van is a camper",   # variante positiva en la fase inicial; ahora genérica
     "save my size: 44",
     "set my size to 44",
     "note that my size is 44",
@@ -169,21 +166,6 @@ def test_mensajes_normales_no_son_comandos_ni_escriben(frase):
     assert not os.path.exists(memoria.FACTS_PATH)   # ni siquiera se crea el fichero
 
 
-@pytest.mark.parametrize("frase", [
-    '"recuerda que mi coche es rojo"',
-    "'olvida mi coche'",
-    "«recuerda que mi coche es rojo»",
-    "<<forget my car>>",
-    "«¿qué recuerdas?»",
-    "'actualiza en tu memoria coche a azul'",
-])
-def test_cita_reconocible_se_rechaza_localmente_sin_tocar_la_memoria(frase):
-    procesar_comando_memoria("recuerda que mi coche es azul")
-    r = procesar_comando_memoria(frase)
-    assert r is not None and ("comillas" in r or "quotes" in r)
-    assert hechos_en_disco() == {"coche": "azul"}
-
-
 def test_la_consulta_no_crea_el_fichero():
     assert "No tengo nada guardado" in procesar_comando_memoria("¿qué sabes de mi coche?")
     procesar_comando_memoria("¿qué recuerdas?")
@@ -193,10 +175,10 @@ def test_la_consulta_no_crea_el_fichero():
 # --------------------------------------------------------------------------- duplicados, conflictos y ambigüedad
 def test_duplicado_no_reescribe_y_lo_dice():
     procesar_comando_memoria("recuerda que mi gato se llama Mishi")
-    antes = _almacen_temporal_bytes()
+    antes = open(memoria.FACTS_PATH, encoding="utf-8").read()
     r = procesar_comando_memoria("recuerda que el gato se llama mishi")  # mismo hecho, otra forma
     assert "Ya lo tenía guardado" in r
-    assert _almacen_temporal_bytes() == antes
+    assert open(memoria.FACTS_PATH, encoding="utf-8").read() == antes
 
 
 def test_conflicto_no_sobreescribe_y_pide_actualizar():
@@ -287,8 +269,8 @@ def test_listar_y_memoria_vacia():
 def test_consulta_desconocida_y_parecidos():
     procesar_comando_memoria("recuerda que mi color favorito es el azul")
     assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi talla?")
-    r = procesar_comando_memoria("¿qué sabes de mi color?")            # coincidencia parcial: sólo sugerencia
-    assert "'color favorito'" in r and "Quizá" in r and "el azul" not in r and "Sí" not in r
+    r = procesar_comando_memoria("¿qué sabes de mi color?")          # coincidencia parcial única
+    assert "Quizá te refieres a: 'color favorito'" in r and "el azul" not in r   # sugerencia, no hecho confirmado
     assert "el azul" in procesar_comando_memoria("¿qué sabes de mi color favorito?")
 
 
@@ -731,8 +713,9 @@ def test_memoria_heredada_es_consultable_editable_y_olvidable(_almacen_temporal)
     escribir_perfil(_almacen_temporal)
     # la migración se dispara sola en el primer uso de la memoria
     assert "una camper" in procesar_comando_memoria("¿cuál es mi furgoneta?")
-    assert "'pareja nombre'" in procesar_comando_memoria("¿qué recuerdas de mi pareja?")   # sugerencia
-    assert "Ana" in procesar_comando_memoria("¿qué recuerdas de mi pareja nombre?")
+    r = procesar_comando_memoria("¿qué recuerdas de mi pareja?")     # parcial: sólo sugiere la clave
+    assert "'pareja nombre'" in r and "Ana" not in r
+    assert "Ana" in procesar_comando_memoria("¿qué recuerdas de pareja nombre?")
     assert "Actualizado" in procesar_comando_memoria("recuerda que ahora mi furgoneta es un monovolumen")
     assert "Olvidado" in procesar_comando_memoria("olvida mi color favorito")
     contexto = memoria.get_memory_context()
@@ -833,83 +816,154 @@ def viajes():
     assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en junio"}
 
 
-def test_actualizar_la_clave_larga_nunca_cambia_la_corta(viajes):
-    assert "Actualizado: viaje a Roma = julio" in procesar_comando_memoria("recuerda que ahora mi viaje a Roma es julio")
-    assert "Actualizado: viaje a Roma = agosto" in procesar_comando_memoria("actualiza en tu memoria mi viaje a Roma: agosto")
-    assert "Updated: viaje a Roma = September" in procesar_comando_memoria("update the fact viaje a Roma: September")
-    assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "September"}
-    assert "Actualizado: viaje = abril" in procesar_comando_memoria("recuerda que ahora mi viaje es abril")
-    assert hechos_en_disco() == {"viaje": "abril", "viaje a roma": "September"}
-
-
-def test_division_ambigua_con_varias_claves_guardadas_pregunta(viajes):
-    for frase in ("actualiza en tu memoria mi viaje a Roma a julio", "cambia el hecho viaje a Roma por julio",
-                  "update the fact viaje a Roma to July"):
-        r = procesar_comando_memoria(frase)
-        assert "'viaje'" in r and "'viaje a Roma'" in r and ("clave completa" in r or "full key" in r), frase
-        assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en junio"}, frase
-
-
-def test_division_a_por_to_se_resuelve_con_la_clave_guardada():
-    procesar_comando_memoria("recuerda que mi viaje a Roma es en junio")      # sólo la larga
-    assert "viaje a Roma = julio" in procesar_comando_memoria("actualiza en tu memoria mi viaje a Roma a julio")
-    assert hechos_en_disco() == {"viaje a roma": "julio"}
-    procesar_comando_memoria("olvida mi viaje a Roma")
-    procesar_comando_memoria("recuerda que mi viaje es en mayo")              # sólo la corta
-    assert "viaje = Roma a julio" in procesar_comando_memoria("actualiza en tu memoria mi viaje a Roma a julio")
-    assert hechos_en_disco() == {"viaje": "Roma a julio"}
-
-
-def test_division_ambigua_sin_nada_guardado_pregunta_y_no_crea_nada():
-    r = procesar_comando_memoria("actualiza en tu memoria mi ruta a casa a la del monte")
-    assert "'ruta'" in r and "'ruta a casa'" in r
-    assert not os.path.exists(memoria.FACTS_PATH)
-    assert "ruta a casa = la del monte" in procesar_comando_memoria("actualiza en tu memoria mi ruta a casa: la del monte")
-
-
-def test_olvidar_y_comparar_usan_la_clave_exacta(viajes):
-    r = procesar_comando_memoria("olvida mi viaje a")                           # parcial: no borra
-    assert "Quizá" in r and hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en junio"}
-    assert "Sí: viaje a Roma es en junio" in procesar_comando_memoria("¿recuerdas que mi viaje a Roma es en junio?")
-    assert "Sí: viaje es en mayo" in procesar_comando_memoria("¿recuerdas que mi viaje es en mayo?")
-    assert "Olvidado: viaje a Roma" in procesar_comando_memoria("olvida que mi viaje a Roma es en junio")
-    assert hechos_en_disco() == {"viaje": "en mayo"}
-    assert "Olvidado: viaje " in procesar_comando_memoria("olvida mi viaje")
-    assert hechos_en_disco() == {}
-
-
-def test_valor_que_contiene_es_se_resuelve_con_la_clave_guardada():
-    procesar_comando_memoria("recuerda que mi frase es lo que es")
-    r = procesar_comando_memoria("recuerda que ahora mi frase es lo que es es lo que hay")
-    assert "frase = lo que es es lo que hay" in r
-    assert hechos_en_disco() == {"frase": "lo que es es lo que hay"}
-
-
-# =========================================================================== contradicciones
-@pytest.mark.parametrize("frase", [
-    "recuerda que mi coche es rojo y olvida mi coche",
-    "recuerda que mi coche es rojo pero no lo guardes",
-    "recuerda que mi moto es roja y mi moto es negra",
-    "olvida mi coche y recuerda que mi coche es verde",
-    "remember that my car is red and forget it",
-    "remember that my bike is red and my bike is black",
-    "forget my car and remember that my car is green",
-    "actualiza en tu memoria: mi coche es verde y olvida mi coche",
+@pytest.mark.parametrize("frase,esperado", [
+    ("recuerda que ahora mi viaje a Roma es en julio", "en julio"),
+    ("actualiza en tu memoria viaje a Roma: en julio", "en julio"),
+    ("corrige tu memoria: mi viaje a Roma es en julio", "en julio"),
+    ("update the fact viaje a Roma: en julio", "en julio"),
+    ("remember that now my viaje a Roma is en julio", "en julio"),
 ])
-def test_peticion_contradictoria_se_rechaza_sin_cambiar_nada(frase):
-    procesar_comando_memoria("recuerda que mi coche es azul")
+def test_actualizar_la_clave_larga_nunca_toca_la_corta(viajes, frase, esperado):
     r = procesar_comando_memoria(frase)
-    assert r is not None and ("contradice" in r or "contradicts" in r)
-    assert hechos_en_disco() == {"coche": "azul"}
+    assert "viaje a Roma" in r
+    assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": esperado}
 
 
-# =========================================================================== peticiones incompletas
+@pytest.mark.parametrize("frase", [
+    "actualiza en tu memoria mi viaje a Roma a julio",     # 'a' dentro de la clave y como separador
+    "cambia el hecho viaje a Roma por julio",
+    "update the fact viaje a Roma to July",
+])
+def test_division_ambigua_pide_aclaracion_y_no_escribe(viajes, frase):
+    antes = open(memoria.FACTS_PATH, "rb").read()
+    r = procesar_comando_memoria(frase)
+    assert "'viaje'" in r and "'viaje a Roma'" in r
+    assert ("No está claro" in r) or ("not clear" in r)
+    assert open(memoria.FACTS_PATH, "rb").read() == antes
+
+
+def test_division_unica_sigue_funcionando(viajes):
+    assert "Actualizado: viaje = marzo" in procesar_comando_memoria("actualiza en tu memoria mi viaje a marzo")
+    assert hechos_en_disco() == {"viaje": "marzo", "viaje a roma": "en junio"}
+
+
+@pytest.fixture
+def planes():
+    procesar_comando_memoria("recuerda que mi plan es descansar")
+    procesar_comando_memoria("actualiza en tu memoria plan es viajar: sí")     # clave 'plan es viajar'
+    assert hechos_en_disco() == {"plan": "descansar", "plan es viajar": "sí"}
+
+
+def test_lectura_natural_ambigua_con_clave_guardada_se_aclara(planes):
+    """Varias divisiones con 'es' y otra que la primera nombra un hecho guardado -> aclarar."""
+    antes = open(memoria.FACTS_PATH, "rb").read()
+    r = procesar_comando_memoria("recuerda que ahora mi plan es viajar es lo mejor")
+    assert "No está claro" in r and "'plan'" in r and "'plan es viajar'" in r
+    assert open(memoria.FACTS_PATH, "rb").read() == antes
+
+
+def test_olvidar_sólo_la_clave_completa(viajes):
+    assert "Olvidado: viaje a Roma" in procesar_comando_memoria("olvida mi viaje a Roma")
+    assert hechos_en_disco() == {"viaje": "en mayo"}
+    procesar_comando_memoria("recuerda que mi viaje a Roma es en junio")
+    assert "Olvidado: viaje (era: en mayo)" in procesar_comando_memoria("olvida mi viaje")
+    assert hechos_en_disco() == {"viaje a roma": "en junio"}
+
+
+def test_olvidar_con_valor_resuelve_la_clave_completa(viajes):
+    r = procesar_comando_memoria("olvida que mi viaje a Roma es en mayo")   # valor de 'viaje', clave de 'viaje a Roma'
+    assert "en junio" in r and hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en junio"}
+    assert "Olvidado" in procesar_comando_memoria("olvida que mi viaje a Roma es en junio")
+    assert hechos_en_disco() == {"viaje": "en mayo"}
+
+
+def test_recordar_la_clave_larga_no_choca_con_la_corta():
+    procesar_comando_memoria("recuerda que mi viaje es en mayo")
+    r = procesar_comando_memoria("recuerda que mi viaje a Roma es en junio")
+    assert "Hecho guardado: viaje a Roma" in r
+    r = procesar_comando_memoria("recuerda que mi viaje a Roma es en julio")   # conflicto SÓLO con la larga
+    assert "viaje a Roma es en junio" in r
+    assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en junio"}
+
+
+# =========================================================================== citas, ejemplos y contradicciones
+@pytest.mark.parametrize("frase", [
+    "recuerda que mi lema es «menos es más»",
+    'recuerda que mi coche es "rojo"',
+    "recuerda que 'mi coche' es rojo",
+    "remember that my car is “red”",
+    "olvida que mi coche es 'rojo'",
+    "actualiza en tu memoria mi coche: «azul»",
+    "recuerda que mi lema es <<menos es más>>",
+])
+def test_citas_en_la_peticion_se_rechazan(frase):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    r = procesar_comando_memoria(frase)
+    assert "comillas" in r or "quotes" in r
+    assert hechos_en_disco() == {"coche": "rojo"}
+
+
+@pytest.mark.parametrize("frase", [
+    "recuerda que por ejemplo mi coche es azul",
+    "recuerda, por ejemplo, que mi coche es azul",
+    "recuerda que p. ej. mi coche es azul",
+    "remember that for example my car is blue",
+    "remember that e.g. my car is blue",
+    "olvida por ejemplo mi coche",
+    "recuerda que ahora, supongamos, mi coche es azul",
+])
+def test_ejemplos_se_rechazan(frase):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    r = procesar_comando_memoria(frase)
+    assert r is not None and ("ejemplo" in r or "example" in r)
+    assert hechos_en_disco() == {"coche": "rojo"}
+
+
+def test_apostrofo_dentro_de_palabra_no_es_una_cita():
+    assert "Fact stored: Ana's car = white" in procesar_comando_memoria("remember that Ana's car is white")
+
+
+@pytest.mark.parametrize("frase", [
+    "recuerda que mi moto es roja y olvídalo",
+    "recuerda que mi moto es roja, no lo guardes",
+    "recuerda que mi moto es roja pero no la recuerdes",
+    "recuerda y olvida mi moto",
+    "remember that my moto is red and forget it",
+    "remember that my moto is red, don't save it",
+    "olvida mi coche y recuerda que mi moto es roja",
+    "olvida mi coche, guárdalo",
+    "no recuerdes que mi moto es roja, recuérdalo",
+    "recuerda que mi moto es roja y mi moto es azul",          # misma clave, dos valores
+    "recuerda que mi gato se llama Tom y mi gato se llama Garfield",
+])
+def test_instrucciones_contradictorias_no_cambian_nada(frase):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    antes = open(memoria.FACTS_PATH, "rb").read()
+    r = procesar_comando_memoria(frase)
+    assert r is not None and ("contradictorias" in r or "contradictory" in r)
+    assert open(memoria.FACTS_PATH, "rb").read() == antes
+
+
+def test_palabra_de_memoria_dentro_de_un_valor_no_es_contradiccion():
+    assert "Hecho guardado" in procesar_comando_memoria("recuerda que mi canción es Remember the Name")
+    assert hechos_en_disco() == {"cancion": "Remember the Name"}
+
+
+def test_mismo_hecho_repetido_no_es_contradiccion():
+    r = procesar_comando_memoria("recuerda que mi moto es roja y mi moto es roja")
+    assert r.count("Hecho guardado") == 1 and hechos_en_disco() == {"moto": "roja"}
+
+
+# =========================================================================== peticiones incompletas: siempre locales
 @pytest.mark.parametrize("frase,pista", [
-    ("recuerda", "recordar"), ("recuerda que", "recordar"), ("B.A.I, memoriza:", "recordar"),
-    ("guarda en tu memoria", "recordar"), ("olvida", "olvidar"), ("olvídate de", "olvidar"),
-    ("borra de tu memoria", "olvidar"), ("actualiza en tu memoria", "actualizar"),
-    ("remember", "remember"), ("forget", "forget"), ("forget about", "forget"),
-    ("update the fact", "update"), ("save to memory", "remember"),
+    ("recuerda", "recuerda que"), ("recuerda que", "recuerda que"), ("recuérdalo", "recuerda que"),
+    ("memoriza esto", "recuerda que"), ("remember", "remember that"), ("remember this", "remember that"),
+    ("guarda en tu memoria", "recuerda que"), ("save to memory", "remember that"),
+    ("olvida", "olvida <clave>"), ("olvídalo", "olvida <clave>"), ("olvídate de eso", "olvida <clave>"),
+    ("forget", "forget <key>"), ("borra de tu memoria", "olvida <clave>"), ("delete from memory", "forget <key>"),
+    ("actualiza tu memoria", "recuerda que ahora"), ("update your memory", "remember that now"),
+    ("¿recuerdas?", "¿cuál es mi"), ("¿te acuerdas?", "¿cuál es mi"), ("do you remember?", "what is my"),
+    ("¿cuál es mi?", "¿cuál es mi"), ("¿qué sabes de?", "¿cuál es mi"),
 ])
 def test_peticion_incompleta_se_aclara_localmente(frase, pista):
     r = procesar_comando_memoria(frase)
@@ -917,119 +971,151 @@ def test_peticion_incompleta_se_aclara_localmente(frase, pista):
     assert not os.path.exists(memoria.FACTS_PATH)
 
 
-def test_peticion_incompleta_o_citada_nunca_invoca_un_motor(motor_controlado):
+@pytest.mark.parametrize("frase", ["recuerda", "olvídalo", "¿recuerdas?", "borra de tu memoria",
+                                   "recuerda que mi coche no es rojo", "recuerda que por ejemplo mi coche es rojo"])
+@pytest.mark.parametrize("modo", ["offline", "online"])
+def test_aclaraciones_nunca_invocan_un_motor_ni_con_prefijo_online(motor_controlado, frase, modo):
     ai, sel, fake = motor_controlado
+    sel.set_modo(modo)
     hist = []
-    for frase in ("recuerda", "online: olvida", "online: remember that", '"recuerda que mi coche es rojo"',
-                  "online: «olvida mi coche»", "recuerda que mi coche es rojo y olvida mi coche"):
-        r = ai.ask(frase, hist)
-        assert r is not None and "Ningún motor" not in r and "OFFLINE" not in r, frase
-    sel.set_modo("online")
-    for frase in ("online: recuerda", "online: forget", "online: actualiza en tu memoria mi viaje a Roma a julio"):
-        r = ai.ask(frase, hist)
-        assert r is not None and "respuesta de" not in r, frase
+    for entrada in (frase, "online: " + frase, "en línea: " + frase):
+        r = ai.ask(entrada, hist)
+        assert r and "OFFLINE" not in r and "Ningún motor" not in r     # local: ni rechazo ni error de motor
     assert all(m.llamadas == [] for m in fake.motores.todos.values())
     assert fake.estado["hosts"] == [] and hist == []
-    assert not os.path.exists(memoria.FACTS_PATH)
+    assert sel.modo == modo                                               # la autorización no cambia
 
 
-def test_autorizacion_online_sigue_siendo_explicita(motor_controlado):
-    """Lo local no relaja la política: un mensaje normal con prefijo online en modo offline se rechaza."""
+def test_autorizacion_explicita_intacta_para_mensajes_normales(motor_controlado):
     ai, sel, fake = motor_controlado
-    r = ai.ask("online: hola", [])
-    assert r.startswith("Estás en modo OFFLINE") and fake.estado["hosts"] == []
-    assert fake.motores.todos["on_a"].llamadas == [] and sel.modo == "offline"
+    r = ai.ask("online: ¿qué tiempo hace?", [])
+    assert r.startswith("Estás en modo OFFLINE")                          # sigue exigiendo autorización
+    assert fake.motores.todos["on_a"].llamadas == [] and fake.estado["hosts"] == []
+    assert sel.modo == "offline"
 
 
-# =========================================================================== escritura multi-hecho atómica
-def test_multi_hecho_fallo_de_escritura_no_deja_nada_a_medias(_almacen_temporal):
-    procesar_comando_memoria("recuerda que mi coche es azul")
+# =========================================================================== escrituras múltiples atómicas
+def test_varios_hechos_se_escriben_en_una_sola_operacion(monkeypatch):
+    escrituras = []
+    original = memoria.guardar_hechos
+    monkeypatch.setattr(memoria, "guardar_hechos", lambda *a, **kw: (escrituras.append(1), original(*a, **kw))[1])
+    procesar_comando_memoria("recuerda que mi gato se llama Mishi y mi perro se llama Rex y mi pez se llama Nemo")
+    assert len(escrituras) == 1
+    assert hechos_en_disco() == {"gato": "Mishi", "perro": "Rex", "pez": "Nemo"}
+
+
+def test_fallo_de_escritura_multiple_no_deja_nada_a_medias(_almacen_temporal):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
     antes = _almacen_temporal.hechos.read_bytes()
+    llamadas = []
+    real_replace = os.replace
 
-    def explota(*a, **kw):
+    def falla_en_la_segunda(*a, **kw):
+        llamadas.append(a)
         raise OSError("disco lleno (simulado)")
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", explota)
+        mp.setattr(os, "replace", falla_en_la_segunda)
         r = procesar_comando_memoria("recuerda que mi gato se llama Mishi y mi perro se llama Rex")
-    assert "No he podido guardar" in r and "Hecho guardado" not in r
+    assert "NINGÚN cambio" in r and "Hecho guardado" not in r          # informe exacto: nada guardado
     assert _almacen_temporal.hechos.read_bytes() == antes
-    assert hechos_en_disco() == {"coche": "azul"}
+    assert len(llamadas) == 1                                           # un único intento de escritura
+    assert real_replace is os.replace
 
 
-def test_multi_hecho_con_conflicto_una_sola_escritura_e_informe_exacto(monkeypatch):
-    procesar_comando_memoria("recuerda que mi coche es azul")
-    escrituras = []
-    original = memoria.guardar_hechos
-    monkeypatch.setattr(memoria, "guardar_hechos", lambda h, meta=None: (escrituras.append(dict(h)), original(h, meta)))
-    r = procesar_comando_memoria("recuerda que mi coche es rojo y mi gato se llama Mishi y mi perro se llama Rex")
-    lineas = r.splitlines()
-    assert len(lineas) == 3
-    assert "coche es azul" in lineas[0] and "No lo he sobreescrito" in lineas[0]
-    assert lineas[1].startswith("Hecho guardado: gato = Mishi") and lineas[2].startswith("Hecho guardado: perro = Rex")
-    assert len(escrituras) == 1
-    assert hechos_en_disco() == {"coche": "azul", "gato": "Mishi", "perro": "Rex"}
-
-
-def test_multi_hecho_sin_cambios_no_escribe():
+def test_conflicto_parcial_se_informa_con_exactitud():
     procesar_comando_memoria("recuerda que mi gato se llama Mishi")
-    antes = _almacen_temporal_bytes()
-    r = procesar_comando_memoria("recuerda que mi gato se llama Mishi y mi gato se llama mishi")
-    assert r.count("Ya lo tenía guardado") == 2
-    assert _almacen_temporal_bytes() == antes
+    r = procesar_comando_memoria("recuerda que mi gato se llama Tom y mi perro se llama Rex")
+    lineas = r.splitlines()
+    assert len(lineas) == 2
+    assert "Ya tengo guardado que gato es Mishi" in lineas[0] and "Hecho guardado: perro = Rex" in lineas[1]
+    assert hechos_en_disco() == {"gato": "Mishi", "perro": "Rex"}
 
 
-# =========================================================================== coincidencias parciales = sugerencias
-def test_coincidencia_parcial_nunca_se_confirma_como_hecho():
-    procesar_comando_memoria("recuerda que mi viaje a Roma es en junio")
-    for frase in ("¿cuál es mi viaje?", "¿qué recuerdas de mi viaje?", "¿recuerdas mi viaje?", "what is my viaje?"):
-        r = procesar_comando_memoria(frase)
-        assert "'viaje a Roma'" in r and "en junio" not in r and not r.startswith(("Sí", "Yes")), frase
-    assert "en junio" in procesar_comando_memoria("¿cuál es mi viaje a Roma?")
+def test_ambiguedad_en_un_hecho_bloquea_toda_la_peticion(planes):
+    antes = open(memoria.FACTS_PATH, "rb").read()
+    r = procesar_comando_memoria("recuerda que ahora mi perro es Rex y mi plan es viajar es lo mejor")
+    assert "No está claro" in r
+    assert open(memoria.FACTS_PATH, "rb").read() == antes              # ni siquiera 'perro'
 
 
-# =========================================================================== migración: sin reimportar lo olvidado
-def test_migracion_con_vaciado_fallido_no_reimporta_lo_olvidado(_almacen_temporal, capsys):
-    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"furgoneta": "una camper", "gato": "Mishi"}})
-    original = _almacen_temporal.perfil.read_bytes()
+# =========================================================================== consultas parciales: sólo sugerencias
+@pytest.mark.parametrize("frase", ["¿cuál es mi número?", "¿qué recuerdas de mi número?", "¿qué sabes de mi número?",
+                                   "¿recuerdas mi número?", "¿recuerdas que mi número es 7?", "what is my número?"])
+def test_coincidencia_parcial_es_sugerencia_sin_valor(frase):
+    procesar_comando_memoria("recuerda que mi número de la suerte es 7")
+    r = procesar_comando_memoria(frase)
+    assert "número de la suerte" in r and "7" not in r.replace(frase, "")
+    assert not r.startswith(("Sí", "Yes"))
+
+
+# =========================================================================== migración: nada olvidado vuelve
+def _falla_vaciar_perfil(mp):
     real = memoria._escribir_atomico
 
-    def fallo_solo_perfil(ruta, contenido, prefijo):
+    def escribir(ruta, contenido, prefijo):
         if ruta == memoria.MEMORY_PATH:
-            raise OSError("perfil de sólo lectura (simulado)")
+            raise OSError("perfil de solo lectura (simulado)")
         return real(ruta, contenido, prefijo)
 
+    mp.setattr(memoria, "_escribir_atomico", escribir)
+
+
+def test_migracion_con_perfil_no_vaciable_no_reimporta_lo_olvidado(_almacen_temporal, capsys):
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"furgoneta": "una camper", "gato": "Mishi"}})
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(memoria, "_escribir_atomico", fallo_solo_perfil)
-        assert memoria.migrar_perfil_legado() == 2
-    assert "no he podido vaciarlo" in capsys.readouterr().out
-    assert _almacen_temporal.perfil.read_bytes() == original             # el perfil sigue lleno
-    assert hechos_en_disco() == {"furgoneta": "una camper", "gato": "Mishi"}
-    # el usuario olvida un hecho heredado...
-    assert "Olvidado" in procesar_comando_memoria("olvida mi furgoneta")
-    # ...y ni el siguiente intento de migración ni un proceso "nuevo" lo resucitan
-    assert memoria.migrar_perfil_legado() == 0
-    assert hechos_en_disco() == {"gato": "Mishi"}
-    assert "una camper" not in memoria.get_memory_context()
-    # esta vez el vaciado funciona y la copia de seguridad sigue siendo única
-    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}
-    assert len(list(_almacen_temporal.dir.glob("user_profile.yaml.legado-*.bak"))) == 1
-
-
-def test_marca_de_migracion_sobrevive_a_las_operaciones(_almacen_temporal):
-    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"gato": "Mishi"}})
+        _falla_vaciar_perfil(mp)
+        assert "Olvidado" in procesar_comando_memoria("olvida mi furgoneta")
+        # el perfil sigue lleno (no se pudo vaciar) pero la furgoneta no vuelve por ningún camino
+        assert "furgoneta" in _almacen_temporal.perfil.read_text()
+        for _ in range(3):
+            assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+        contexto = memoria.get_memory_context()
+        assert "camper" not in contexto and contexto.count("Mishi") == 1
+        procesar_comando_memoria("olvida todo, confirmo")
+        assert hechos_en_disco() == {} and "Mishi" not in memoria.get_memory_context()
+    salida = capsys.readouterr().out
+    assert salida.count("no he podido vaciar el perfil") == 1               # sin avisos repetidos
+    # cuando el perfil vuelve a ser escribible se vacía, sin reimportar nada
     memoria.migrar_perfil_legado()
-    procesar_comando_memoria("recuerda que mi coche es rojo")
-    procesar_comando_memoria("olvida mi gato")
-    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
-    assert isinstance(datos.get("perfil_migrado"), str) and len(datos["perfil_migrado"]) == 64
-    # y un perfil modificado a mano después SÍ se importa (huella distinta)
-    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"perro": "Rex"}})
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}
+    assert hechos_en_disco() == {}
+
+
+def test_perfil_editado_tras_migrar_sólo_importa_lo_nuevo(_almacen_temporal):
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"furgoneta": "una camper"}})
+    procesar_comando_memoria("olvida mi furgoneta")
+    # alguien restaura el perfil antiguo y añade un dato nuevo
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"furgoneta": "una camper", "perro": "Rex"}})
     assert memoria.migrar_perfil_legado() == 1
-    assert hechos_en_disco() == {"coche": "rojo", "perro": "Rex"}
+    assert hechos_en_disco() == {"perro": "Rex"}
 
 
-def test_marca_de_migracion_invalida_se_rechaza(_almacen_temporal):
-    _almacen_temporal.hechos.write_text("version: 1\nhechos: {}\nperfil_migrado: 5\n", encoding="utf-8")
-    with pytest.raises(memoria.MemoriaHechosInvalida, match="perfil_migrado"):
+def test_huellas_de_migracion_validadas_por_el_esquema(_almacen_temporal):
+    _almacen_temporal.hechos.write_text("version: 1\nhechos: {}\nlegado_migrado: 3\n", encoding="utf-8")
+    with pytest.raises(memoria.MemoriaHechosInvalida, match="legado_migrado"):
         memoria.cargar_hechos()
+
+
+# =========================================================================== CLI de punta a punta
+def test_cli_clave_completa_y_aclaraciones_sin_motor(memoria_temporal, selector_fake, monkeypatch, capsys, tmp_path):
+    import builtins
+    import core.ai_engine as ai
+    import core.assistant as assistant
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(tmp_path / "h"))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(tmp_path / "h" / "historial.json"))
+    sel = selector_fake.crear(config_base("offline"))
+    monkeypatch.setattr(ai, "_selector", sel)
+    monkeypatch.setattr(assistant, "chat_history", [])
+    entradas = ["recuerda que mi viaje es en mayo", "recuerda que mi viaje a Roma es en junio",
+                "actualiza en tu memoria mi viaje a Roma a julio",          # ambiguo -> aclaración
+                "recuerda que ahora mi viaje a Roma es en julio",           # inequívoco
+                "online: recuerda", "online: olvídalo", "¿cuál es mi viaje a?", "salir"]
+    monkeypatch.setattr(builtins, "input", lambda *_: entradas.pop(0))
+    assistant.run_assistant()
+    out = capsys.readouterr().out
+    assert "No está claro" in out and "Actualizado: viaje a Roma = en julio" in out
+    assert "Quizá te refieres a" in out and "Estás en modo OFFLINE" not in out
+    assert hechos_en_disco() == {"viaje": "en mayo", "viaje a roma": "en julio"}
+    assert all(m.llamadas == [] for m in selector_fake.motores.todos.values())
+    assert selector_fake.estado["hosts"] == []

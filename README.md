@@ -158,7 +158,7 @@ processed 100% locally (see "Memory and context" below for the guarantees):
 |---|---|
 | Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `memoriza/aprende que...` · `ten en cuenta que...` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `learn that...` · several facts at once: `recuerda que mi gato se llama Mishi y mi perro se llama Rex` |
 | Retrieve | `¿qué sabes de mi furgoneta?` · `¿cuál es mi furgoneta?` · `¿recuerdas mi furgoneta?` · `¿qué recuerdas?` · `lista tus hechos` · `what is my van?` · `do you remember my van?` · `what do you remember?` · `show your facts` |
-| Update | `recuerda que ahora mi furgoneta es un monovolumen` · `actualiza/cambia/corrige en tu memoria X a Y` · `corrige tu memoria: X es Y` · `remember that now X is Y` · `update the fact X to Y` |
+| Update | `recuerda que ahora mi furgoneta es un monovolumen` · `actualiza en tu memoria X: Y` · `actualiza/cambia/corrige en tu memoria X a Y` · `corrige tu memoria: X es Y` · `remember that now X is Y` · `update the fact X to Y` |
 | Forget | `olvida mi furgoneta` · `olvídate de X` · `ya no recuerdes X` · `borra/elimina de tu memoria X` · `forget my van` · `remove X from your memory` · `olvida todo` / `forget everything` (asks for the confirmation phrase `olvida todo, confirmo` / `forget everything, confirm`) |
 
 **Explicit memory intent is required.** Verbs that *mean* remembering or
@@ -173,27 +173,28 @@ message must be the request (optional `B.A.I,` vocative and `por favor`/
 `please`); `online: recuerda que...` is also handled locally, in any mode.
 
 Never written to memory: plain statements ("mi furgoneta es una camper"),
-questions, assistant responses, general questions ("¿qué sabes de Python?"
-goes to the model) and negations — `no recuerdes que...` / `don't save...` get
-a local "I won't store that" reply, and a negated fact (`recuerda que mi coche
-no es rojo`) gets a clarification instead of a wrong value. Quoted examples
-(`"recuerda que mi coche es rojo"`) and contradictory requests ("recuerda que X
-es rojo y olvida X", two values for the same key) are rejected locally without
-touching memory. A recognizable but incomplete request (`recuerda`, `olvida`,
-`online: remember that`) is answered locally with a clarification — no backend
-is ever invoked for a clarification, in any mode.
+questions, assistant responses, general questions ("¿qué sabes de Python?" goes
+to the model), requests containing quotation marks or example markers (`por
+ejemplo`, `for example`, `e.g.`…), contradictory or chained instructions
+(`recuerda que X es Y y olvídalo`, the same key with two values) and negations — `no recuerdes que...` /
+`don't save...` get a local "I won't store that" reply, and a negated fact
+(`recuerda que mi coche no es rojo`) gets a clarification instead of a wrong
+value. Ownership is preserved: `mi coche` ≡ `el coche`, but `tu coche`,
+`el coche de Ana` or `Ana's car` are different facts and partial matches never
+cross owners. Ambiguous requests ("recuerda eso", several matching keys, a
+value that conflicts with a stored one, "olvida todo") get a clarification/
+confirmation instead of a guess.
 
-**Data integrity.** Keys are resolved against the stored facts *before* any
-mutation: with both `viaje` and `viaje a Roma` stored, `recuerda que ahora mi
-viaje a Roma es julio` (or `actualiza en tu memoria mi viaje a Roma: julio`)
-changes only the long key, and an ambiguous split (`actualiza en tu memoria mi
-viaje a Roma a julio`) asks for the full key instead of guessing. Forget and
-compare use exact keys only. Partial matches (`¿cuál es mi viaje?`) are returned
-as **suggestions**, never as confirmed facts. Ownership is preserved: `mi
-coche` ≡ `el coche`, but `tu coche`, `el coche de Ana` or `Ana's car` are
-different facts and suggestions never cross owners. Several facts in one
-request are written in a **single atomic write** (all or nothing), with a
-per-fact report (stored / already known / conflict not overwritten).
+**The complete key is resolved before any change.** With `viaje` and
+`viaje a Roma` both stored, a request that could split either way
+(`actualiza en tu memoria mi viaje a Roma a julio`) changes nothing and asks
+for the full key; `recuerda que ahora mi viaje a Roma es en julio` or
+`actualiza en tu memoria viaje a Roma: julio` only touch `viaje a Roma`.
+Forgetting deletes exact keys only. A partial lookup (`¿cuál es mi número?`
+with `número de la suerte` stored) is answered with key *suggestions*, never
+with a value presented as confirmed. Recognizable but incomplete requests
+(`recuerda`, `olvídalo`, `borra de tu memoria`, `¿recuerdas?`) are clarified
+locally — also with the `online:` prefix — and never reach any backend.
 
 ---|---|
 | Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `apunta/anota/memoriza que...` · `aprende: X es Y` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `note down that...` |
@@ -395,20 +396,25 @@ backend (online or offline):
 - Duplicates are detected ("Ya lo tenía guardado"); a conflicting value is
   **not** overwritten — B.A.I asks you to say `recuerda que ahora X es Y`.
   Updating or forgetting one fact never touches unrelated facts.
+- A request with several facts is written in **one** atomic operation: either
+  every accepted fact is saved or none is (and the reply says so); per-fact
+  conflicts are reported line by line.
 - `olvida todo` / `forget everything` requires an explicit confirmation phrase.
 - **Legacy memory is migrated, not lost.** Data written by earlier phases into
   `user_profile.yaml` (`aprendido_durante_sesion` and the nested sections) is
   moved once into `facts.yaml` on first use — after a byte-for-byte backup
   `user_profile.yaml.legado-<timestamp>.bak` — so it becomes retrievable,
-  editable and forgettable like any other fact. If the fact store is damaged
-  or the write fails, the profile is left untouched (and still reaches the
-  context) and B.A.I says so. `facts.yaml` records the hash of the imported
-  profile (`perfil_migrado`), so a profile that could not be emptied after a
-  successful import is never re-imported (forgotten facts stay forgotten).
+  editable and forgettable like any other fact. Each migrated profile entry
+  is fingerprinted (`legado_migrado` in `facts.yaml`, written atomically with
+  the facts), so a forgotten legacy fact is never re-imported or re-injected,
+  even if emptying the profile fails or the old profile is restored later. If
+  the fact store is damaged or the write fails, nothing is imported, the
+  profile is left untouched (and still reaches the context) and B.A.I says so.
 - The conversation history is also protected: an unreadable or malformed
-  `historial.json` is kept as `historial.json.corrupto-<timestamp>.bak`; if it
-  cannot even be moved, it is left untouched and the session is saved to
-  `historial.nuevo-<timestamp>.json` next to it. History writes are atomic.
+  `historial.json` is kept as `historial.json.corrupto-<timestamp>.bak`; if
+  it cannot be moved it is left untouched and the session is saved to
+  `historial-rescate-<timestamp>.json` (merged on the next start) instead of
+  overwriting it. History writes are atomic.
 
 ---
 

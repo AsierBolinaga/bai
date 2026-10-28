@@ -139,9 +139,10 @@ def test_fallback_visible_para_el_usuario(cli, capsys):
 def test_fallo_de_generacion_no_corrompe_historial_ni_memoria(cli, capsys):
     from core.motors.base import MotorError
     # petición explícita: guarda el hecho; mensaje normal: NO aprende nada
-    out = cli.ejecutar(["recuerda que mi furgoneta es una camper", "salir"], capsys)
+    out = cli.ejecutar(["recuerda que mi furgoneta es una camper", "hola", "salir"], capsys)
     assert "Hecho guardado: furgoneta = una camper" in out
     assert cli.hechos_guardados() == {"furgoneta": "una camper"}
+    assert [m["content"] for m in cli.historial_guardado()] == ["hola", "respuesta de off_a"]   # turno correcto
 
     for nombre in ("off_a", "off_b"):
         cli.fake.motores.todos[nombre].error = MotorError("modelo caído")
@@ -150,8 +151,8 @@ def test_fallo_de_generacion_no_corrompe_historial_ni_memoria(cli, capsys):
     assert "off_a: modelo caído" in out and "off_b: modelo caído" in out
     assert "No se ha contactado con ningún servicio externo" in out and "pasa a modo online" in out
     assert cli.selector.modo == "offline"
-    # historial: sin el turno fallido; hechos: intactos y sin 'pareja'
-    assert [m["content"] for m in cli.historial_guardado()] == []
+    # historial: conserva el turno correcto y no añade el fallido; hechos: intactos y sin 'pareja'
+    assert [m["content"] for m in cli.historial_guardado()] == ["hola", "respuesta de off_a"]
     assert cli.hechos_guardados() == {"furgoneta": "una camper"}
     assert cli.perfil_guardado() == {"aprendido_durante_sesion": {}}   # el perfil no se toca
 
