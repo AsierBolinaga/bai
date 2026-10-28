@@ -6,7 +6,8 @@ modelo según el modo de trabajo (online / offline).
 import re
 
 from config.motors_config import PROJECT_ROOT
-from core.memory_engine import learn_from_input, get_memory_context
+from core.memory_commands import procesar_comando_memoria
+from core.memory_engine import get_memory_context
 from core.model_selector import AislamientoActivo, ModelSelector, SinMotorDisponible, hay_conexion  # noqa: F401
 
 SYSTEM_PROMPT_PATH = PROJECT_ROOT / "config" / "data" / "system_prompt.txt"
@@ -163,15 +164,27 @@ def ask(user_input, chat_history, selector=None):
     if es_comando_estado(user_input):
         return describir_estado(selector)
 
-    # --- petición explícita de motor online para este turno ---------------------
+    # --- prefijo 'online:' (sólo se aplica a la generación, más abajo) ----------
     prioridad_turno = None
     m = _PREFIJO_ONLINE.match(user_input)
+    texto = m.group(2).strip() if m else user_input
+
+    # --- peticiones de memoria en lenguaje natural (fase 7) --------------------
+    # Se resuelven LOCALMENTE antes de tocar el selector, con o sin prefijo
+    # 'online:' y en cualquier modo: nunca provocan inferencia (ni online ni
+    # offline) ni comprobaciones de conectividad. Sólo las peticiones
+    # explícitas llegan aquí; la conversación normal no escribe nada.
+    respuesta_memoria = procesar_comando_memoria(texto)
+    if respuesta_memoria is not None:
+        return respuesta_memoria
+
+    # --- petición explícita de motor online para este turno ---------------------
     if m:
         if selector.modo == "offline":
             # Sin autorización previa no se contacta con ningún servicio externo.
             return f"Estás en modo OFFLINE: no usaré el motor online para este mensaje. {AUTORIZACION_ONLINE}"
         prioridad_turno = "online"
-        user_input = m.group(2).strip()
+        user_input = texto
 
     # --- generación ------------------------------------------------------------
     global ultima_respuesta
@@ -198,11 +211,11 @@ def ask(user_input, chat_history, selector=None):
             print(f"[B.A.I] Aviso: motor principal no disponible ({descartados}). "
                   f"Respondo con {respuesta.motor} [{respuesta.modelo}].")
 
-    # Turno completado: se persiste el historial y se aprende del mensaje del usuario.
+    # Turno completado: se persiste el historial. La memoria persistente NO se
+    # toca: sólo escriben las peticiones explícitas (procesar_comando_memoria).
     ultima_respuesta = respuesta
     chat_history.append({"role": "user", "content": user_input})
     chat_history.append({"role": "assistant", "content": respuesta.texto})
-    learn_from_input(user_input)
 
     if _mostrar_motor(selector):
         return f"{respuesta.texto}\n{etiqueta_motor(respuesta)}"

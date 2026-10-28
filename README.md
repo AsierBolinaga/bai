@@ -19,8 +19,10 @@ graph LR
     R --> H[motors/llama_cpp_engine.py]
     R --> H2[motors/gpt4all_engine.py]
     S --> K[config/motors_config.yaml]
+    D --> M[memory_commands.py]
     D --> I[memory_engine.py]
-    I --> J[user_profile.yaml memory + JSON history]
+    M --> I
+    I --> J[facts.yaml + user_profile.yaml + JSON history]
 ```
 
 ### Model selection workflow
@@ -147,7 +149,64 @@ Anything else is an ordinary message and **never** changes the mode: negations
 - `salir`, `exit`, `quit`: exit the session
 - `reset`: clears the conversation history
 - `ver memoria`: shows the current history
-- `recuerda que X es Y`, `aprende: Z es ...`: saves to memory
+
+**Memory requests (phase 7 — natural local learning, in progress)** — persistent
+facts are managed with natural-language requests, in Spanish or English,
+processed 100% locally (see "Memory and context" below for the guarantees):
+
+| Operation | Example phrasings (many variants accepted) |
+|---|---|
+| Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `memoriza/aprende que...` · `ten en cuenta que...` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `learn that...` · several facts at once: `recuerda que mi gato se llama Mishi y mi perro se llama Rex` |
+| Retrieve | `¿qué sabes de mi furgoneta?` · `¿cuál es mi furgoneta?` · `¿recuerdas mi furgoneta?` · `¿qué recuerdas?` · `lista tus hechos` · `what is my van?` · `do you remember my van?` · `what do you remember?` · `show your facts` |
+| Update | `recuerda que ahora mi furgoneta es un monovolumen` · `actualiza/cambia/corrige en tu memoria X a Y` · `corrige tu memoria: X es Y` · `remember that now X is Y` · `update the fact X to Y` |
+| Forget | `olvida mi furgoneta` · `olvídate de X` · `ya no recuerdes X` · `borra/elimina de tu memoria X` · `forget my van` · `remove X from your memory` · `olvida todo` / `forget everything` (asks for the confirmation phrase `olvida todo, confirmo` / `forget everything, confirm`) |
+
+**Explicit memory intent is required.** Verbs that *mean* remembering or
+forgetting (`recuerda`, `no olvides`, `memoriza`, `aprende`, `olvida`,
+`remember`, `forget`…) work directly. Generic verbs (`guarda`, `anota`,
+`apunta`, `actualiza`, `cambia`, `borra`, `elimina`, `save`, `note`, `set`,
+`update`, `delete`, `remove`…) are memory requests **only** with an explicit
+memory object (`en tu memoria`, `como hecho`, `el hecho X`, `in your memory`,
+`the fact X`…); `guarda que mi talla es 44`, `set X to Y` or `borra X` are
+ordinary messages that never save, change or delete a fact. The *whole*
+message must be the request (optional `B.A.I,` vocative and `por favor`/
+`please`); `online: recuerda que...` is also handled locally, in any mode.
+
+Never written to memory: plain statements ("mi furgoneta es una camper"),
+questions, assistant responses, general questions ("¿qué sabes de Python?"
+goes to the model) and negations — `no recuerdes que...` / `don't save...` get
+a local "I won't store that" reply, and a negated fact (`recuerda que mi coche
+no es rojo`) gets a clarification instead of a wrong value. Quoted examples
+(`"recuerda que mi coche es rojo"`) and contradictory requests ("recuerda que X
+es rojo y olvida X", two values for the same key) are rejected locally without
+touching memory. A recognizable but incomplete request (`recuerda`, `olvida`,
+`online: remember that`) is answered locally with a clarification — no backend
+is ever invoked for a clarification, in any mode.
+
+**Data integrity.** Keys are resolved against the stored facts *before* any
+mutation: with both `viaje` and `viaje a Roma` stored, `recuerda que ahora mi
+viaje a Roma es julio` (or `actualiza en tu memoria mi viaje a Roma: julio`)
+changes only the long key, and an ambiguous split (`actualiza en tu memoria mi
+viaje a Roma a julio`) asks for the full key instead of guessing. Forget and
+compare use exact keys only. Partial matches (`¿cuál es mi viaje?`) are returned
+as **suggestions**, never as confirmed facts. Ownership is preserved: `mi
+coche` ≡ `el coche`, but `tu coche`, `el coche de Ana` or `Ana's car` are
+different facts and suggestions never cross owners. Several facts in one
+request are written in a **single atomic write** (all or nothing), with a
+per-fact report (stored / already known / conflict not overwritten).
+
+---|---|
+| Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `apunta/anota/memoriza que...` · `aprende: X es Y` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `note down that...` |
+| Retrieve | `¿qué sabes de mi furgoneta?` · `¿cuál es mi furgoneta?` · `¿recuerdas mi furgoneta?` · `¿qué recuerdas?` · `lista tus hechos` · `what is my van?` · `do you remember my van?` · `what do you remember?` · `show your facts` |
+| Update | `actualiza mi furgoneta a un monovolumen` · `cambia X a/por Y` · `corrige: X es Y` · `recuerda que ahora X es Y` · `update X to Y` · `change/set X to Y` |
+| Forget | `olvida mi furgoneta` · `olvídate de X` · `borra/elimina X` · `ya no recuerdes X` · `forget my van` · `delete/stop remembering X` · `olvida todo` / `forget everything` (asks for the confirmation phrase `olvida todo, confirmo` / `forget everything, confirm`) |
+
+The *whole* message must be the request (optional `B.A.I,` vocative and
+`por favor`/`please`). Everything else is ordinary conversation and **never**
+writes to memory: plain statements ("mi furgoneta es una camper"), questions,
+negations ("no recuerdes que..."), quoted examples and assistant responses.
+Ambiguous requests ("recuerda eso", a value that conflicts with a stored one,
+"olvida todo") get a clarification/confirmation instead of a guess.
 
 ---
 
@@ -174,7 +233,8 @@ core/
 ├── arranque.py          # bai.py options (--online / --offline / --aislamiento) and isolation at startup
 ├── diagnostico.py       # CLI diagnostics: python -m core.diagnostico [--probar] [--bloquear-red]
 ├── assistant.py         # Main CLI
-├── memory_engine.py     # Personalized memory and history management
+├── memory_engine.py     # Fact store (atomic, validated) + history + memory context
+├── memory_commands.py   # Phase 7: natural-language memory requests (local, deterministic)
 ├── offline_engine.py    # Compatibility facade: force offline motors
 ├── online_engine.py     # Compatibility facade: force online motors (no local fallback)
 ├── motors/              # Pluggable engines (online and offline)
@@ -186,7 +246,8 @@ core/
 │   └── ollama_engine.py # TODO (detected as "not implemented" by the registry)
 config/
 ├── data/
-│   ├── user_profile.yaml        # Personal memory
+│   ├── user_profile.yaml        # Static personal profile
+│   ├── facts.yaml               # Persistent facts (created on first 'recuerda que...')
 │   └── system_prompt.txt
 ├── motors_config.py     # Config loader (absolute paths, defaults, legacy format, validation)
 ├── motors_config.yaml   # Mode + online/offline motors configuration
@@ -307,9 +368,47 @@ skipped automatically when the libraries are not installed.
 
 ## 🧠 Memory and context
 
-- `user_profile.yaml` stores data learned during sessions
-- `system_prompt.txt` defines the assistant's base behavior
-- `historial.json` is created on startup and continuously updated
+Three separate stores, all injected into the context the same way for every
+backend (online or offline):
+
+- `config/data/facts.yaml` — **persistent facts** (phase 7). Written only by
+  explicit natural-language requests (`recuerda que...`, `olvida...`, see the
+  commands table above), interpreted locally and deterministically by
+  `core/memory_commands.py` — this is memory *management*, not model training,
+  and it never triggers any inference or connectivity check, in any mode.
+- `config/data/user_profile.yaml` — static user profile (edited by hand).
+- `history/historial.json` — conversation history, created on startup and
+  continuously updated. Memory requests are control commands: they do not go
+  through any motor and are not stored in the history.
+- `system_prompt.txt` defines the assistant's base behavior.
+
+**Guarantees of the fact store**
+
+- Facts survive restarts and are injected as a system message on every turn;
+  a forgotten fact is no longer injected.
+- Success is reported **only after** the write to disk has completed. Writes
+  are atomic (temp file + `os.replace`), so a failure mid-write never destroys
+  the previous data.
+- `facts.yaml` has a versioned schema (`version: 1`). A malformed file, an
+  unknown schema/version or an unreadable file is reported and **never
+  overwritten** (fix or rename it yourself); none of these crash a normal turn.
+- Duplicates are detected ("Ya lo tenía guardado"); a conflicting value is
+  **not** overwritten — B.A.I asks you to say `recuerda que ahora X es Y`.
+  Updating or forgetting one fact never touches unrelated facts.
+- `olvida todo` / `forget everything` requires an explicit confirmation phrase.
+- **Legacy memory is migrated, not lost.** Data written by earlier phases into
+  `user_profile.yaml` (`aprendido_durante_sesion` and the nested sections) is
+  moved once into `facts.yaml` on first use — after a byte-for-byte backup
+  `user_profile.yaml.legado-<timestamp>.bak` — so it becomes retrievable,
+  editable and forgettable like any other fact. If the fact store is damaged
+  or the write fails, the profile is left untouched (and still reaches the
+  context) and B.A.I says so. `facts.yaml` records the hash of the imported
+  profile (`perfil_migrado`), so a profile that could not be emptied after a
+  successful import is never re-imported (forgotten facts stay forgotten).
+- The conversation history is also protected: an unreadable or malformed
+  `historial.json` is kept as `historial.json.corrupto-<timestamp>.bak`; if it
+  cannot even be moved, it is left untouched and the session is saved to
+  `historial.nuevo-<timestamp>.json` next to it. History writes are atomic.
 
 ---
 
@@ -321,7 +420,7 @@ skipped automatically when the libraries are not installed.
 4. **Controlled online mode (OpenAI)** – completed ✅  
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
-7. Natural local learning (in progress)  
+7. Natural local learning (in progress: persistent facts managed by natural-language requests)  
 8. **Visual interface (UI)**  
 9. **Voice system**  
 10. **Cross-platform compatibility**  

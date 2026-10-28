@@ -22,6 +22,7 @@ __pycache__/
 *.swp
 
 # Private local configuration and credentials
+config/data/facts.yaml
 config/data/*.local.*
 config/data/*.secret.*
 .env.*

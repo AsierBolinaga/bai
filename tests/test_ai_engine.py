@@ -88,7 +88,7 @@ def test_ask_cambia_a_offline(entorno):
     assert "OFFLINE" in r
     assert sel.modo == "offline"
     assert hist == []                      # los comandos no van al historial
-    assert ai._aprendido == []             # ni se "aprenden" como memoria
+    assert not ai._memoria_temporal.hechos.exists()   # ni se "aprenden" como hechos
     assert all(m.llamadas == [] for m in fake.motores.todos.values())
 
 
@@ -149,7 +149,7 @@ def test_ask_online_envia_contexto_completo_y_guarda_historial(entorno):
     assert recibidos[-1]["content"] == "¿qué hora es?"
     assert hist[-2:] == [{"role": "user", "content": "¿qué hora es?"},
                          {"role": "assistant", "content": "respuesta de on_a"}]
-    assert ai._aprendido == ["¿qué hora es?"]
+    assert not ai._memoria_temporal.hechos.exists()   # conversar no escribe hechos
 
 
 def test_ask_offline_recibe_el_mismo_contexto_que_online(entorno):
@@ -224,8 +224,7 @@ def test_describir_estado_formato(entorno):
 
 # --------------------------------------------------------------------------- efectos en memoria según éxito/fallo
 def test_turno_fallido_no_aprende_ni_modifica_historial(entorno):
-    """Regresión: antes learn_from_input() se ejecutaba antes de generar, así que
-    un fallo del motor dejaba el perfil modificado pero el historial intacto."""
+    """Un fallo del motor no deja rastro: ni historial ni memoria persistente."""
     ai, sel, fake = entorno
     fake.estado["conexion"] = False
     for nombre in ("off_a", "off_b"):
@@ -233,18 +232,22 @@ def test_turno_fallido_no_aprende_ni_modifica_historial(entorno):
     hist = []
     r = ai.ask("mi furgoneta es una camper", hist)
     assert r.startswith("Ningún motor")
-    assert hist == [] and ai._aprendido == []
+    assert hist == [] and not ai._memoria_temporal.hechos.exists()
     assert ai.ultima_respuesta is None
 
 
-def test_turno_correcto_aprende_despues_de_guardar_historial(entorno):
+def test_turno_normal_nunca_escribe_memoria_persistente(entorno):
+    """Regresión fase 7: antes CADA mensaje pasaba por learn_from_input() y
+    modificaba el perfil. Ahora la conversación normal no escribe nada."""
+    import yaml
     ai, sel, fake = entorno
-    orden = []
     hist = []
-    ai.learn_from_input = lambda texto: orden.append(("learn", len(hist)))
-    ai.ask("hola", hist)
-    assert orden == [("learn", 2)]  # se aprende con el turno ya en el historial
+    for frase in ("mi furgoneta es una camper", "tengo 30 años", "me gusta el monte"):
+        ai.ask(frase, hist)
     assert ai.ultima_respuesta is not None and ai.ultima_respuesta.motor == "on_a"
+    assert not ai._memoria_temporal.hechos.exists()
+    perfil = yaml.safe_load(ai._memoria_temporal.perfil.read_text(encoding="utf-8"))
+    assert perfil == {"aprendido_durante_sesion": {}}
 
 
 def test_fallo_en_generacion_tras_exito_previo_deja_estado_coherente(entorno):
@@ -257,7 +260,7 @@ def test_fallo_en_generacion_tras_exito_previo_deja_estado_coherente(entorno):
         fake.motores.todos[nombre].disponible_ok = False
     ai.ask("segunda", hist)
     assert [m["content"] for m in hist] == ["primera", "respuesta de on_a"]
-    assert ai._aprendido == ["primera"]
+    assert not ai._memoria_temporal.hechos.exists()
     assert ai.ultima_respuesta is None
 
 
@@ -357,7 +360,7 @@ def test_prefijo_online_en_modo_offline_se_rechaza_sin_contactar(entorno_local):
     hist = []
     r = ai.ask("online: dime el tiempo en Bilbao", hist)
     assert r.startswith("Estás en modo OFFLINE") and "pasa a modo online" in r
-    assert hist == [] and ai._aprendido == []
+    assert hist == [] and not ai._memoria_temporal.hechos.exists()
     assert all(m.llamadas == [] for m in fake.motores.todos.values())
     assert fake.estado["hosts"] == []
     assert sel.modo == "offline"

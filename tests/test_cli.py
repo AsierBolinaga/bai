@@ -24,9 +24,11 @@ def cli(monkeypatch, tmp_path, selector_fake):
     historial_dir.mkdir()
     perfil = tmp_path / "user_profile.yaml"
     perfil.write_text("aprendido_durante_sesion: {}\n", encoding="utf-8")
+    hechos = tmp_path / "facts.yaml"
     monkeypatch.setattr(memoria, "HISTORY_DIR", str(historial_dir))
     monkeypatch.setattr(memoria, "SESSION_FILE", str(historial_dir / "historial.json"))
     monkeypatch.setattr(memoria, "MEMORY_PATH", str(perfil))
+    monkeypatch.setattr(memoria, "FACTS_PATH", str(hechos))
 
     cfg = config_local("offline")
     cfg["mostrar_motor"] = True
@@ -49,11 +51,18 @@ def cli(monkeypatch, tmp_path, selector_fake):
     def perfil_guardado():
         return yaml.safe_load(perfil.read_text(encoding="utf-8"))
 
+    def hechos_guardados():
+        if not hechos.exists():
+            return {}
+        datos = yaml.safe_load(hechos.read_text(encoding="utf-8")) or {}
+        return {clave: e["valor"] for clave, e in (datos.get("hechos") or {}).items()}
+
     class Entorno:
         pass
 
     e = Entorno()
     e.ejecutar, e.historial_guardado, e.perfil_guardado = ejecutar, historial_guardado, perfil_guardado
+    e.hechos_guardados, e.ruta_hechos = hechos_guardados, hechos
     e.selector, e.fake, e.historial, e.dir = sel, selector_fake, historial, historial_dir
     return e
 
@@ -129,8 +138,10 @@ def test_fallback_visible_para_el_usuario(cli, capsys):
 
 def test_fallo_de_generacion_no_corrompe_historial_ni_memoria(cli, capsys):
     from core.motors.base import MotorError
-    out = cli.ejecutar(["mi furgoneta es una camper", "salir"], capsys)   # turno correcto: aprende
-    assert cli.perfil_guardado()["vida_personal"]["vehiculo"] == "una camper"
+    # petición explícita: guarda el hecho; mensaje normal: NO aprende nada
+    out = cli.ejecutar(["recuerda que mi furgoneta es una camper", "salir"], capsys)
+    assert "Hecho guardado: furgoneta = una camper" in out
+    assert cli.hechos_guardados() == {"furgoneta": "una camper"}
 
     for nombre in ("off_a", "off_b"):
         cli.fake.motores.todos[nombre].error = MotorError("modelo caído")
@@ -139,10 +150,10 @@ def test_fallo_de_generacion_no_corrompe_historial_ni_memoria(cli, capsys):
     assert "off_a: modelo caído" in out and "off_b: modelo caído" in out
     assert "No se ha contactado con ningún servicio externo" in out and "pasa a modo online" in out
     assert cli.selector.modo == "offline"
-    # historial: sólo el turno correcto; memoria: sin 'pareja'
-    assert [m["content"] for m in cli.historial_guardado()] == ["mi furgoneta es una camper", "respuesta de off_a"]
-    assert "pareja" not in cli.perfil_guardado().get("vida_personal", {})
-    assert cli.perfil_guardado()["vida_personal"]["vehiculo"] == "una camper"
+    # historial: sin el turno fallido; hechos: intactos y sin 'pareja'
+    assert [m["content"] for m in cli.historial_guardado()] == []
+    assert cli.hechos_guardados() == {"furgoneta": "una camper"}
+    assert cli.perfil_guardado() == {"aprendido_durante_sesion": {}}   # el perfil no se toca
 
 
 def test_comandos_de_control_no_contaminan_la_memoria(cli, capsys):
@@ -150,6 +161,73 @@ def test_comandos_de_control_no_contaminan_la_memoria(cli, capsys):
     perfil = cli.perfil_guardado()
     assert perfil.get("aprendido_durante_sesion", {}) in ({}, None) or "pasa" not in perfil["aprendido_durante_sesion"]
     assert "estado" not in perfil.get("aprendido_durante_sesion", {})
+    assert cli.hechos_guardados() == {}   # tampoco aparecen como hechos
+
+
+# --------------------------------------------------------------------------- memoria natural (fase 7) en la CLI
+def test_ciclo_completo_de_memoria_en_la_cli(cli, capsys):
+    out = cli.ejecutar([
+        "recuerda que mi furgoneta es una camper",
+        "¿qué recuerdas?",
+        "recuerda que ahora mi furgoneta es un monovolumen",
+        "¿cuál es mi furgoneta?",
+        "olvida mi furgoneta",
+        "¿qué recuerdas?",
+        "salir",
+    ], capsys)
+    assert "Hecho guardado: furgoneta = una camper" in out
+    assert "furgoneta: una camper" in out
+    assert "Actualizado: furgoneta = un monovolumen" in out
+    assert "furgoneta es un monovolumen" in out
+    assert "Olvidado: furgoneta" in out
+    assert "ningún hecho" in out
+    assert cli.hechos_guardados() == {}
+    # los comandos de memoria no pasan por ningún motor ni por el historial
+    assert all(m.llamadas == [] for m in cli.fake.motores.todos.values())
+    assert cli.historial_guardado() == []
+
+
+def test_memoria_persiste_entre_sesiones_de_la_cli(cli, capsys):
+    cli.ejecutar(["recuerda que mi gato se llama Mishi", "salir"], capsys)
+    assert cli.hechos_guardados() == {"gato": "Mishi"}
+    out = cli.ejecutar(["¿cuál es mi gato?", "hola", "salir"], capsys)   # nueva sesión
+    assert "gato es Mishi" in out
+    # y el hecho llega como contexto de sistema al motor en el turno normal
+    recibidos, _ = cli.fake.motores.todos["off_a"].llamadas[-1]
+    assert any("gato: Mishi" in m["content"] for m in recibidos if m["role"] == "system")
+
+
+def test_cli_no_aprende_de_conversacion_preguntas_ni_citas(cli, capsys):
+    out = cli.ejecutar([
+        "mi furgoneta es una camper",
+        "¿mi gato se llama Mishi?",
+        "guarda que mi talla es 42",                 # genérico sin objeto de memoria
+        "Explica qué significa 'recuerda que X es Y'",
+        "no recuerdes que mi clave es 1234",         # negación: respuesta local, sin escribir
+        "salir",
+    ], capsys)
+    assert cli.hechos_guardados() == {}
+    assert not cli.ruta_hechos.exists()
+    assert "no guardaré nada" in out
+    # las cuatro primeras fueron conversación normal: 4 turnos al motor local
+    assert len(cli.fake.motores.todos["off_a"].llamadas) == 4
+
+
+def test_cli_memoria_sin_interferencia_online_ni_en_modo_online(cli, capsys):
+    out = cli.ejecutar(["pasa a modo online", "remember that my van is a camper",
+                        "forget my van", "salir"], capsys)
+    assert "Fact stored" in out and "Forgotten" in out
+    assert cli.fake.motores.todos["on_a"].llamadas == []
+    # la única comprobación de conectividad posible es la del cambio de modo, no la de memoria
+    assert cli.fake.estado["hosts"] == []
+
+
+def test_cli_informa_sin_exito_falso_si_no_puede_guardar(cli, capsys, monkeypatch):
+    cli.ruta_hechos.write_text("no soy un diccionario válido: [", encoding="utf-8")
+    antes = cli.ruta_hechos.read_bytes()
+    out = cli.ejecutar(["recuerda que mi coche es rojo", "salir"], capsys)
+    assert "dañado" in out and "Hecho guardado" not in out
+    assert cli.ruta_hechos.read_bytes() == antes     # el fichero dañado no se toca
 
 
 # --------------------------------------------------------------------------- integridad del historial
@@ -306,6 +384,7 @@ sys.path.insert(0, {str(PROJECT_ROOT)!r})
 import core.memory_engine as m
 m.HISTORY_DIR = {str(tmp_path / 'hist')!r}; m.SESSION_FILE = m.HISTORY_DIR + "/historial.json"
 m.MEMORY_PATH = {str(tmp_path / 'perfil.yaml')!r}
+m.FACTS_PATH = {str(tmp_path / 'facts.yaml')!r}
 import os
 if not os.path.exists(m.MEMORY_PATH):
     open(m.MEMORY_PATH, "w").write("aprendido_durante_sesion: {{}}\\n")
@@ -345,13 +424,16 @@ def test_historial_persiste_entre_dos_procesos_independientes(tmp_path):
     recibido = tmp_path / "recibido.json"
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
 
-    # Proceso 1: una conversación y salida normal (guarda el historial)
-    r1 = subprocess.run([sys.executable, "-c", _programa_sesion(tmp_path, ["mi furgoneta es una camper", "salir"], recibido)],
+    # Proceso 1: conversación + petición EXPLÍCITA de memoria, y salida normal
+    r1 = subprocess.run([sys.executable, "-c", _programa_sesion(
+        tmp_path, ["hola motor", "recuerda que mi furgoneta es una camper", "salir"], recibido)],
                         cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
     assert r1.returncode == 0, r1.stderr
+    assert "Hecho guardado: furgoneta = una camper" in r1.stdout
     guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
-    assert guardado == [{"role": "user", "content": "mi furgoneta es una camper"},
-                        {"role": "assistant", "content": "respuesta a: mi furgoneta es una camper"}]
+    # el comando de memoria no contamina el historial
+    assert guardado == [{"role": "user", "content": "hola motor"},
+                        {"role": "assistant", "content": "respuesta a: hola motor"}]
 
     # Proceso 2 (intérprete nuevo): la segunda petición debe llevar la conversación guardada
     r2 = subprocess.run([sys.executable, "-c", _programa_sesion(tmp_path, ["¿cómo se llama mi vehículo?", "salir"], recibido)],
@@ -359,11 +441,17 @@ def test_historial_persiste_entre_dos_procesos_independientes(tmp_path):
     assert r2.returncode == 0, r2.stderr
     mensajes = json.loads(recibido.read_text(encoding="utf-8"))
     turnos = [(m["role"], m["content"]) for m in mensajes if m["role"] != "system"]
-    assert turnos == [("user", "mi furgoneta es una camper"),
-                      ("assistant", "respuesta a: mi furgoneta es una camper"),
+    assert turnos == [("user", "hola motor"),
+                      ("assistant", "respuesta a: hola motor"),
                       ("user", "¿cómo se llama mi vehículo?")]
-    # y la memoria aprendida en el proceso 1 llega como contexto de sistema en el proceso 2
-    assert any("una camper" in m["content"] for m in mensajes if m["role"] == "system")
+    # y el hecho guardado en el proceso 1 llega como contexto de sistema en el proceso 2
+    assert any("furgoneta: una camper" in m["content"] for m in mensajes if m["role"] == "system")
     # el historial acumulado en disco contiene ambas sesiones, en orden
     guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
-    assert [m["content"] for m in guardado if m["role"] == "user"] == ["mi furgoneta es una camper", "¿cómo se llama mi vehículo?"]
+    assert [m["content"] for m in guardado if m["role"] == "user"] == ["hola motor", "¿cómo se llama mi vehículo?"]
+
+
+def test_bai_sh_es_ejecutable():
+    import os
+    from config.motors_config import PROJECT_ROOT
+    assert os.access(PROJECT_ROOT / "bai.sh", os.X_OK), "bai.sh debe conservar el bit de ejecución"

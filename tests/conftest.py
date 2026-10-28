@@ -185,19 +185,32 @@ def libreria_fake(monkeypatch):
 
 # --------------------------------------------------------------------------- aislamiento memoria
 @pytest.fixture
-def ai_engine_aislado(monkeypatch):
+def memoria_temporal(monkeypatch, tmp_path):
+    """Redirige la memoria persistente (hechos y perfil) a tmp_path para que
+    ningún test toque config/data/*. Devuelve las rutas temporales."""
+    import core.memory_engine as memoria
+
+    perfil = tmp_path / "user_profile.yaml"
+    perfil.write_text("aprendido_durante_sesion: {}\n", encoding="utf-8")
+    hechos = tmp_path / "facts.yaml"
+    monkeypatch.setattr(memoria, "MEMORY_PATH", str(perfil))
+    monkeypatch.setattr(memoria, "FACTS_PATH", str(hechos))
+    return types.SimpleNamespace(perfil=perfil, hechos=hechos, dir=tmp_path)
+
+
+@pytest.fixture
+def ai_engine_aislado(monkeypatch, memoria_temporal):
     """
-    core.ai_engine sin efectos secundarios sobre config/data/user_profile.yaml:
-    learn_from_input se sustituye por un registro y la memoria por un texto fijo.
+    core.ai_engine sin efectos secundarios sobre config/data/*: la memoria
+    persistente vive en tmp_path (memoria_temporal), el contexto y el prompt
+    de sistema son textos fijos.
     """
     import core.ai_engine as ai
 
-    aprendido = []
-    monkeypatch.setattr(ai, "learn_from_input", lambda texto: aprendido.append(texto))
     monkeypatch.setattr(ai, "get_memory_context", lambda: "Memoria de prueba.")
     monkeypatch.setattr(ai, "get_system_prompt", lambda: "Prompt de sistema de prueba.")
     monkeypatch.setattr(ai, "_selector", None)
-    ai._aprendido = aprendido
+    ai._memoria_temporal = memoria_temporal
     return ai
 
 
