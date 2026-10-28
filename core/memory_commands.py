@@ -91,6 +91,9 @@ MENSAJES = {
         "aclarar_consulta": "¿Qué quieres que consulte? Pregúntame '¿cuál es mi <clave>?' o '¿qué recuerdas?' para verlo todo.",
         "sugerencias_consulta": ("No tengo nada guardado exactamente como '{clave}'. Quizá te refieres a: {lista}. "
                                  "Pregúntamelo con el nombre completo."),
+        "pendientes": ("Además, {n} dato(s) del perfil heredado ({perfil}) están pendientes de reconciliar: {motivo} en "
+                       "{hechos}. No los uso ni los importo por si ya los habías olvidado. Para importarlos como nuevos "
+                       "quita 'perfil_migrado' de ese fichero; para descartarlos, bórralos del perfil."),
     },
     "en": {
         "guardado": "Fact stored: {clave} = {valor}. I will remember it across sessions.",
@@ -138,6 +141,9 @@ MENSAJES = {
         "aclarar_consulta": "What should I look up? Ask 'what is my <key>?' or 'what do you remember?' to see everything.",
         "sugerencias_consulta": ("I have nothing stored exactly as '{clave}'. Did you mean: {lista}? "
                                  "Ask me with the full name."),
+        "pendientes": ("Also, {n} legacy profile entry(ies) ({perfil}) are pending reconciliation: {motivo} in {hechos}. "
+                       "I neither use nor import them, in case you had already forgotten them. To import them as new, "
+                       "remove 'perfil_migrado' from that file; to discard them, delete them from the profile."),
     },
 }
 
@@ -434,9 +440,14 @@ def _hacer_olvidar(idioma, clave):
 def _hacer_listar(idioma):
     hechos = memory_engine.listar_hechos()
     if not hechos:
-        return _msg(idioma, "lista_vacia")
-    lineas = [_msg(idioma, "lista_cabecera", n=len(hechos))]
-    lineas.extend(f"- {clave}: {valor}" for clave, valor in hechos)
+        lineas = [_msg(idioma, "lista_vacia")]
+    else:
+        lineas = [_msg(idioma, "lista_cabecera", n=len(hechos))]
+        lineas.extend(f"- {clave}: {valor}" for clave, valor in hechos)
+    pendientes, motivo = memory_engine.pendientes_reconciliacion()
+    if pendientes:
+        lineas.append(_msg(idioma, "pendientes", n=pendientes, motivo=motivo,
+                           perfil=memory_engine.MEMORY_PATH, hechos=memory_engine.FACTS_PATH))
     return "\n".join(lineas)
 
 

@@ -281,12 +281,10 @@ def _clasificar_hojas(texto, perfil, hojas, marcadores):
     """(índices de `hojas` ya migradas, motivo) según los marcadores del almacén:
     - 'hoja:' -> esa hoja (ruta + valor) ya se importó;
     - 'perfil:' o marcador ajeno que coincide con el perfil -> el perfil entero;
-    - marcadores ajenos que no coinciden con nada conocido -> otra versión marcó
-      el perfil como migrado: se considera migrado ENTERO (no se reimporta nada,
-      así un hecho olvidado nunca vuelve; el perfil queda en copia de seguridad).
-    Los marcadores ajenos se sustituyen por huellas propias en la primera
-    escritura que los absorbe (ver migrar_perfil_legado), de modo que los datos
-    añadidos al perfil DESPUÉS sí se importan."""
+    - marcadores ajenos que no coinciden con nada conocido -> motivo 'pendiente':
+      sólo las hojas con huella propia cuentan como migradas; el resto queda en
+      el perfil SIN importar, SIN inyectar y SIN borrar, pendiente de que el
+      usuario lo reconcilie (no se puede saber si ya se olvidaron como hechos)."""
     if not marcadores:
         return set(), None
     por_hoja = {i for i, (ruta, valor) in enumerate(hojas) if _huella(ruta, valor) in marcadores}
@@ -296,9 +294,26 @@ def _clasificar_hojas(texto, perfil, hojas, marcadores):
     ajenos = _marcadores_ajenos(marcadores)
     if ajenos & _huellas_perfil_completo(texto, perfil):
         return todas, "perfil completo"
-    if ajenos:
-        return todas, "marcador de otra versión"
+    if ajenos and por_hoja != todas:
+        return por_hoja, "pendiente"
     return por_hoja, ("hojas" if por_hoja else None)
+
+
+def pendientes_reconciliacion():
+    """(n, motivo) de las entradas del perfil heredado que no se pueden importar
+    ni inyectar con seguridad porque el almacén lleva un marcador de migración
+    de otra versión que no se reconoce. (0, None) si no hay ninguna."""
+    texto, perfil = _leer_perfil_texto()
+    if not perfil:
+        return 0, None
+    hojas = _aplanar_perfil(perfil)
+    marcadores = huellas_migradas()
+    if not hojas or not marcadores:
+        return 0, None
+    ya, motivo = _clasificar_hojas(texto, perfil, hojas, marcadores)
+    if motivo != "pendiente":
+        return 0, None
+    return len(hojas) - len(ya), "marcador de migración de otra versión no reconocido"
 
 
 def _leer_perfil_texto():
@@ -407,13 +422,25 @@ def migrar_perfil_legado():
     hechos, migradas = dict(almacen["hechos"]), set(almacen["perfil_migrado"])
 
     ya_migradas, motivo = _clasificar_hojas(texto, perfil, hojas, migradas)
+    if motivo == "pendiente":
+        # Marcador de otra versión que no se reconoce: no se puede saber qué hojas
+        # ya se importaron (y quizá se olvidaron). Ni se importan, ni se inyectan,
+        # ni se borran ni se marcan: quedan en el perfil hasta que el usuario las
+        # reconcilie (quitando el marcador de facts.yaml para importarlas como
+        # nuevas, o borrándolas del perfil).
+        _avisar_una_vez(("pendiente", MEMORY_PATH, _huella_perfil(texto)),
+                        f"[B.A.I] Aviso: {FACTS_PATH} lleva un marcador de migración de otra versión que no reconozco. "
+                        f"{len(hojas) - len(ya_migradas)} dato(s) de {MEMORY_PATH} quedan pendientes de reconciliar: "
+                        f"no los importo ni los uso, por si ya se olvidaron. Para importarlos como nuevos quita "
+                        f"'perfil_migrado' de facts.yaml; para descartarlos, bórralos del perfil.")
+        return 0
     nombres = _nombres_legado(hojas)
     pendientes = [(ruta, valor, nombre) for i, ((ruta, valor), (nombre, _)) in enumerate(zip(hojas, nombres))
                   if i not in ya_migradas]
     huellas_nuevas = {_huella(ruta, valor) for i, (ruta, valor) in enumerate(hojas) if i in ya_migradas} - migradas
-    if motivo in ("perfil completo", "marcador de otra versión"):
-        # El perfil entero queda identificado con huellas propias y los marcadores
-        # ajenos se absorben: lo que se añada al perfil más adelante sí se importará.
+    if motivo == "perfil completo":
+        # El perfil entero queda identificado con huellas propias y el marcador ajeno
+        # reconocido se absorbe: lo que se añada al perfil más adelante sí se importará.
         huellas_nuevas.add(_huella_perfil(texto))
         migradas -= _marcadores_ajenos(migradas)
         _avisar_una_vez(("marcado", MEMORY_PATH, _huella_perfil(texto)),
@@ -689,6 +716,16 @@ def _apartar_corrupto(path, motivo):
         return False
 
 
+def _fusionar(acumulado, nuevos):
+    """Une el historial cargado con el de otro fichero. Los ficheros de rescate
+    y historial.json son acumulativos: si el nuevo EMPIEZA por lo ya acumulado
+    lo sustituye en vez de añadirse, así la consolidación es idempotente aunque
+    un fichero ya absorbido no se haya podido borrar."""
+    if len(nuevos) >= len(acumulado) and nuevos[:len(acumulado)] == acumulado:
+        return list(nuevos)
+    return acumulado + nuevos
+
+
 def load_full_history():
     messages = []
     archivos_a_borrar = []
@@ -712,7 +749,7 @@ def load_full_history():
             path = os.path.join(HISTORY_DIR, file)
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    messages.extend(_turnos_validos(json.load(f)))
+                    messages = _fusionar(messages, _turnos_validos(json.load(f)))
                     archivos_a_borrar.append(path)
             except Exception as e:
                 print(f"[B.A.I] Error cargando {file}: {e}")
@@ -730,7 +767,9 @@ def load_full_history():
         try:
             os.remove(path)
         except Exception as e:
-            print(f"[B.A.I] Error borrando {path}: {e}")
+            # Sin consecuencias para la integridad: el fichero ya está absorbido y,
+            # al ser acumulativo, en el próximo arranque _fusionar lo reconocerá.
+            print(f"[B.A.I] Aviso: no puedo borrar el historial ya absorbido {path} ({e}); no se duplicará.")
 
     return messages
 
@@ -751,7 +790,9 @@ def _contexto_perfil():
     else:
         planas = [(ruta, ", ".join(_texto_legado(v) for v in valor) if isinstance(valor, list) else _texto_legado(valor))
                   for ruta, valor in hojas]
-        ya, _ = _clasificar_hojas(texto_perfil, perfil, planas, migradas)
+        ya, motivo = _clasificar_hojas(texto_perfil, perfil, planas, migradas)
+        if motivo == "pendiente":
+            ya = set(range(len(hojas)))   # entradas inciertas: tampoco se inyectan
     texto = []
     for i, (ruta, valor) in enumerate(hojas):
         if i in ya:

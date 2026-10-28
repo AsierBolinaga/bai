@@ -1158,7 +1158,6 @@ def _marcadores_compatibles():
         ("md5 del perfil", [hashlib.md5(texto.encode()).hexdigest()]),
         ("huellas por hoja (formato actual)", [memoria._huella(["aprendido_durante_sesion", "furgoneta"], "una camper"),
                                                memoria._huella(["aprendido_durante_sesion", "gato"], "Mishi")]),
-        ("marcador de otra versión no reconocido", ["deadbeef"]),
     ]
 
 
@@ -1330,5 +1329,86 @@ def test_almacen_perfil_migrado_entre_procesos(tmp_path):
         "perfil_migrado": [hashlib.sha256(texto.encode()).hexdigest()]}))
     out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
     assert "- gato: Mishi" in out and "furgoneta" not in out and "marcado como migrado" in out
+    out = _proceso_migracion(tmp_path, "¿cuál es mi furgoneta?", perfil_no_vaciable=False)
+    assert "No tengo nada guardado" in out and "camper" not in out.split("CONTEXTO>>>")[1]
+
+
+# =========================================================================== marcador no reconocido: pendiente de reconciliar
+def _almacen_con_marcador_desconocido(almacen, perfil=PERFIL_VIEJO):
+    almacen.perfil.write_text(_texto_perfil(perfil), encoding="utf-8")
+    _almacen_marcado(almacen, ["deadbeef"])
+
+
+def test_marcador_no_reconocido_deja_el_perfil_pendiente_sin_importar_ni_inyectar(_almacen_temporal, capsys):
+    _almacen_con_marcador_desconocido(_almacen_temporal)
+    perfil_antes = _almacen_temporal.perfil.read_bytes()
+    for _ in range(3):                                                     # repetible
+        assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")          # hechos del almacén: usables
+        assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")   # incierto: no importado
+        contexto = memoria.get_memory_context()
+        assert "camper" not in contexto and contexto.count("Mishi") == 1   # incierto: no inyectado, ni duplicado
+    assert _almacen_temporal.perfil.read_bytes() == perfil_antes           # NO se vacía ni se reescribe
+    assert not list(_almacen_temporal.dir.glob("user_profile.yaml.legado-*.bak"))
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    assert datos["perfil_migrado"] == ["deadbeef"] and hechos_en_disco() == {"gato": "Mishi"}   # nada marcado
+    # la incertidumbre se explica: una vez por consola y en el listado
+    salida = capsys.readouterr().out
+    assert salida.count("pendientes de reconciliar") == 1
+    r = procesar_comando_memoria("¿qué recuerdas?")
+    assert "- gato: Mishi" in r and "2 dato(s) del perfil heredado" in r and "perfil_migrado" in r
+    assert memoria.pendientes_reconciliacion()[0] == 2
+    # olvidar el último hecho no hace aparecer nada del perfil
+    procesar_comando_memoria("olvida mi gato")
+    assert hechos_en_disco() == {} and memoria.get_memory_context() == ""
+    assert "pendientes" in procesar_comando_memoria("¿qué recuerdas?")
+
+
+def test_reconciliacion_manual_quitando_el_marcador_importa_como_nuevos(_almacen_temporal):
+    _almacen_con_marcador_desconocido(_almacen_temporal)
+    procesar_comando_memoria("¿qué recuerdas?")
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    del datos["perfil_migrado"]
+    _almacen_temporal.hechos.write_text(yaml.safe_dump(datos, allow_unicode=True), encoding="utf-8")
+    assert memoria.migrar_perfil_legado() == 1                             # furgoneta; gato=Mishi ya existía igual
+    assert hechos_en_disco() == {"gato": "Mishi", "furgoneta": "una camper"}
+    assert memoria.pendientes_reconciliacion() == (0, None)
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}
+
+
+def test_reconciliacion_manual_borrando_del_perfil(_almacen_temporal):
+    _almacen_con_marcador_desconocido(_almacen_temporal)
+    procesar_comando_memoria("¿qué recuerdas?")
+    _almacen_temporal.perfil.write_text("aprendido_durante_sesion: {}\n", encoding="utf-8")
+    assert memoria.pendientes_reconciliacion() == (0, None)
+    assert "pendientes" not in procesar_comando_memoria("¿qué recuerdas?")
+    assert hechos_en_disco() == {"gato": "Mishi"}
+
+
+def test_marcador_no_reconocido_con_hojas_propias_importa_solo_lo_seguro(_almacen_temporal):
+    """Con un marcador ajeno Y huellas propias, las hojas con huella cuentan como migradas;
+    las demás quedan pendientes (no se importan aunque sean nuevas: no hay forma de saberlo)."""
+    _almacen_temporal.perfil.write_text(_texto_perfil({"aprendido_durante_sesion": {
+        "furgoneta": "una camper", "perro": "Rex"}}), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, ["deadbeef", memoria._huella(["aprendido_durante_sesion", "furgoneta"], "una camper")])
+    assert memoria.migrar_perfil_legado() == 0
+    assert memoria.pendientes_reconciliacion()[0] == 1
+    assert hechos_en_disco() == {"gato": "Mishi"}
+    assert "Rex" not in memoria.get_memory_context() and "camper" not in memoria.get_memory_context()
+
+
+def test_marcador_no_reconocido_entre_procesos_con_fallos_persistentes(tmp_path):
+    perfil = tmp_path / "perfil.yaml"
+    perfil.write_text(_texto_perfil())
+    (tmp_path / "facts.yaml").write_text(yaml.safe_dump({"version": 1,
+        "hechos": {"gato": {"clave": "gato", "valor": "Mishi"}}, "perfil_migrado": ["deadbeef"]}))
+    antes = (perfil.read_bytes(), (tmp_path / "facts.yaml").read_bytes())
+    for _ in range(3):                                                     # procesos nuevos, perfil no escribible
+        out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=True)
+        assert "- gato: Mishi" in out and "furgoneta" not in out.split("CONTEXTO>>>")[1]
+        assert "pendientes de reconciliar" in out and "camper" not in out.split("CONTEXTO>>>")[1]
+    assert (perfil.read_bytes(), (tmp_path / "facts.yaml").read_bytes()) == antes
+    assert not list(tmp_path.glob("perfil.yaml.legado-*.bak"))
+    out = _proceso_migracion(tmp_path, "olvida mi gato", perfil_no_vaciable=True)
+    assert "Olvidado" in out
     out = _proceso_migracion(tmp_path, "¿cuál es mi furgoneta?", perfil_no_vaciable=False)
     assert "No tengo nada guardado" in out and "camper" not in out.split("CONTEXTO>>>")[1]

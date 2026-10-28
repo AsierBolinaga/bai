@@ -409,9 +409,14 @@ backend (online or offline):
   the facts; `legado_migrado` is read as an alias), so a forgotten legacy fact
   is never re-imported or re-injected, even if emptying the profile fails or
   the old profile is restored later. Stores whose `perfil_migrado` was written
-  by another version (a whole-profile digest, or any marker B.A.I cannot
-  recognize) are honoured: their facts stay usable and the marked profile is
-  not re-imported (it is kept as a backup copy). A legacy value whose key
+  by another version are honoured: their facts stay usable, and a recognized
+  whole-profile digest means the profile is not re-imported (it is kept as a
+  backup copy). If the marker cannot be recognized, the profile entries that
+  carry no fingerprint are left **pending reconciliation**: they are neither
+  imported, nor injected into the context, nor deleted or marked — B.A.I
+  explains this once on the console and in `¿qué recuerdas?`, and you
+  reconcile by removing `perfil_migrado` from `facts.yaml` (import them as
+  new) or deleting them from the profile. A legacy value whose key
   collides with a different stored value is kept as `X (perfil anterior)`,
   `X (perfil anterior 2)`, … — never discarded. If the fact store is damaged
   or the write fails, nothing is imported, the profile is left untouched (and
@@ -421,8 +426,10 @@ backend (online or offline):
   it cannot be moved it is left untouched and the session is saved to
   `historial-rescate-<timestamp>.json` instead of overwriting it; every start
   consolidates the previous rescue file into the current one (or into
-  `historial.json` once it can be moved aside), so sessions are never
-  duplicated. History writes are atomic.
+  `historial.json` once it can be moved aside). Consolidation is idempotent:
+  cumulative files that start with what was already loaded supersede it
+  instead of being appended, so sessions are never duplicated even when an
+  absorbed rescue file cannot be deleted. History writes are atomic.
 
 ---
 
