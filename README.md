@@ -409,14 +409,14 @@ backend (online or offline):
   the facts; `legado_migrado` is read as an alias), so a forgotten legacy fact
   is never re-imported or re-injected, even if emptying the profile fails or
   the old profile is restored later. Stores whose `perfil_migrado` was written
-  by another version are honoured: their facts stay usable, and a recognized
-  whole-profile digest means the profile is not re-imported (it is kept as a
-  backup copy). If the marker cannot be recognized, the profile entries that
-  carry no fingerprint are left **pending reconciliation**: they are neither
-  imported, nor injected into the context, nor deleted or marked — B.A.I
-  explains this once on the console and in `¿qué recuerdas?`, and you
-  reconcile by removing `perfil_migrado` from `facts.yaml` (import them as
-  new) or deleting them from the profile. A legacy value whose key
+  by another version are honoured and their facts stay usable. If the marker
+  identifies the current profile (a whole-profile digest), the profile counts
+  as migrated. If B.A.I cannot interpret the marker, every profile entry that
+  is not already a stored fact stays **pending reconciliation**: it is not
+  imported, not injected into the context, and `user_profile.yaml` is left
+  untouched — it might be a fact that was migrated and later forgotten. B.A.I
+  explains this once per session and lists the pending keys; saying
+  `recuerda que <clave> es <valor>` keeps an entry. A legacy value whose key
   collides with a different stored value is kept as `X (perfil anterior)`,
   `X (perfil anterior 2)`, … — never discarded. If the fact store is damaged
   or the write fails, nothing is imported, the profile is left untouched (and
@@ -427,9 +427,9 @@ backend (online or offline):
   `historial-rescate-<timestamp>.json` instead of overwriting it; every start
   consolidates the previous rescue file into the current one (or into
   `historial.json` once it can be moved aside). Consolidation is idempotent:
-  cumulative files that start with what was already loaded supersede it
-  instead of being appended, so sessions are never duplicated even when an
-  absorbed rescue file cannot be deleted. History writes are atomic.
+  files that were absorbed but cannot be deleted are recorded by name and
+  content hash in `<destination>.absorbidos` and skipped on later starts, so
+  sessions are never duplicated. History writes are atomic.
 
 ---
 

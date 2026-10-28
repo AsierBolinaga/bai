@@ -96,6 +96,9 @@ _CLAVES_RAIZ = {"version", "hechos", *_CLAVES_MARCADOR}
 _CLAVES_ENTRADA = {"clave", "valor", "actualizado", "origen"}
 
 
+_RE_HUELLA = re.compile(r"^(?:(?:hoja|perfil):)?(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
 def _huellas_de_marcador(nombre, valor):
     """Acepta las formas con que se han escrito los marcadores: lista de huellas,
     una sola huella o diccionario con huellas/listas. Cualquier otra cosa es esquema inválido."""
@@ -106,14 +109,17 @@ def _huellas_de_marcador(nombre, valor):
     if isinstance(valor, list) and all(isinstance(h, str) for h in valor):
         return set(valor)
     if isinstance(valor, dict):
+        # En la forma diccionario puede haber metadatos (fecha, versión...): sólo
+        # cuentan como huellas los valores con forma de huella.
         huellas = set()
         for v in valor.values():
             if isinstance(v, str):
-                huellas.add(v)
+                candidatas = [v]
             elif isinstance(v, list) and all(isinstance(h, str) for h in v):
-                huellas.update(v)
+                candidatas = v
             else:
                 raise MemoriaHechosInvalida(f"'{nombre}' debe contener huellas (cadenas)")
+            huellas.update(h for h in candidatas if _RE_HUELLA.match(h))
         return huellas
     raise MemoriaHechosInvalida(f"'{nombre}' debe ser una lista de huellas")
 
@@ -277,43 +283,46 @@ def _marcadores_ajenos(marcadores):
     return {m for m in marcadores if ":" not in m}
 
 
-def _clasificar_hojas(texto, perfil, hojas, marcadores):
-    """(índices de `hojas` ya migradas, motivo) según los marcadores del almacén:
-    - 'hoja:' -> esa hoja (ruta + valor) ya se importó;
-    - 'perfil:' o marcador ajeno que coincide con el perfil -> el perfil entero;
-    - marcadores ajenos que no coinciden con nada conocido -> motivo 'pendiente':
-      sólo las hojas con huella propia cuentan como migradas; el resto queda en
-      el perfil SIN importar, SIN inyectar y SIN borrar, pendiente de que el
-      usuario lo reconcilie (no se puede saber si ya se olvidaron como hechos)."""
-    if not marcadores:
-        return set(), None
-    por_hoja = {i for i, (ruta, valor) in enumerate(hojas) if _huella(ruta, valor) in marcadores}
+def _ya_guardada(nombre, valor, hechos):
+    """True si este valor heredado ya está en los hechos (con su nombre o como
+    'X (perfil anterior N)'): entonces no hay nada que conciliar."""
+    valor = valor.strip().lower()
+    base = normalizar_clave(nombre)
+    if base in hechos and hechos[base]["valor"].strip().lower() == valor:
+        return True
+    prefijo = normalizar_clave(f"{clave_sin_articulo(nombre)} (perfil anterior")
+    return any(norma.startswith(prefijo) and e["valor"].strip().lower() == valor for norma, e in hechos.items())
+
+
+def _clasificar_hojas(texto, perfil, hojas, marcadores, hechos):
+    """Clasifica las hojas del perfil según los marcadores del almacén.
+
+    Devuelve (migradas, inciertas, reconocidos, motivo):
+    - migradas: índices ya importados con certeza: huella 'hoja:' propia, huella
+      'perfil:' propia, o marcador ajeno que coincide con el perfil completo
+      tal y como está (entonces TODAS), o valor ya presente en los hechos;
+    - inciertas: sólo cuando hay marcadores de otra versión que no sé
+      interpretar: hojas que podrían ser hechos ya migrados y luego olvidados.
+      No se importan, no se inyectan y el perfil no se toca: quedan pendientes
+      de conciliación (el usuario decide con 'recuerda que X es Y');
+    - reconocidos: marcadores ajenos identificados (pueden sustituirse por
+      huellas propias sin perder información)."""
     todas = set(range(len(hojas)))
+    if not marcadores:
+        return set(), set(), set(), None
     if _huella_perfil(texto) in marcadores:
-        return todas, "perfil completo"
+        return todas, set(), set(), "perfil completo"
     ajenos = _marcadores_ajenos(marcadores)
-    if ajenos & _huellas_perfil_completo(texto, perfil):
-        return todas, "perfil completo"
-    if ajenos and por_hoja != todas:
-        return por_hoja, "pendiente"
-    return por_hoja, ("hojas" if por_hoja else None)
-
-
-def pendientes_reconciliacion():
-    """(n, motivo) de las entradas del perfil heredado que no se pueden importar
-    ni inyectar con seguridad porque el almacén lleva un marcador de migración
-    de otra versión que no se reconoce. (0, None) si no hay ninguna."""
-    texto, perfil = _leer_perfil_texto()
-    if not perfil:
-        return 0, None
-    hojas = _aplanar_perfil(perfil)
-    marcadores = huellas_migradas()
-    if not hojas or not marcadores:
-        return 0, None
-    ya, motivo = _clasificar_hojas(texto, perfil, hojas, marcadores)
-    if motivo != "pendiente":
-        return 0, None
-    return len(hojas) - len(ya), "marcador de migración de otra versión no reconocido"
+    reconocidos = ajenos & _huellas_perfil_completo(texto, perfil)
+    if reconocidos:
+        return todas, set(), reconocidos, "perfil completo"
+    migradas = {i for i, (ruta, valor) in enumerate(hojas) if _huella(ruta, valor) in marcadores}
+    if not ajenos:
+        return migradas, set(), set(), ("hojas" if migradas else None)
+    nombres = _nombres_legado(hojas)
+    migradas |= {i for i in todas - migradas if _ya_guardada(nombres[i][0], hojas[i][1], hechos)}
+    inciertas = todas - migradas
+    return migradas, inciertas, set(), ("marcador no reconocido" if inciertas else "hojas")
 
 
 def _leer_perfil_texto():
@@ -398,9 +407,10 @@ def migrar_perfil_legado():
     guarda en facts.yaml EN LA MISMA escritura atómica que los hechos. Así:
     - una hoja ya migrada nunca se vuelve a importar, aunque vaciar el perfil
       falle o el perfil se edite después (un hecho heredado olvidado no resucita);
-    - los almacenes marcados por versiones anteriores (perfil_migrado con la
-      huella del perfil completo u otro formato) se respetan: sus hechos se
-      conservan y su perfil no se reimporta;
+    - los almacenes marcados por versiones anteriores se respetan: si el
+      marcador identifica este perfil, se considera migrado; si no se puede
+      interpretar, las hojas que no estén ya en los hechos quedan PENDIENTES
+      de conciliación (ni se importan, ni se inyectan, ni se borra el perfil);
     - si la escritura de hechos falla no se ha importado nada y el perfil sigue intacto;
     - un valor heredado cuya clave choca con un hecho distinto se guarda aparte
       ('X (perfil anterior)'), nunca se descarta.
@@ -421,34 +431,33 @@ def migrar_perfil_legado():
         return 0
     hechos, migradas = dict(almacen["hechos"]), set(almacen["perfil_migrado"])
 
-    ya_migradas, motivo = _clasificar_hojas(texto, perfil, hojas, migradas)
-    if motivo == "pendiente":
-        # Marcador de otra versión que no se reconoce: no se puede saber qué hojas
-        # ya se importaron (y quizá se olvidaron). Ni se importan, ni se inyectan,
-        # ni se borran ni se marcan: quedan en el perfil hasta que el usuario las
-        # reconcilie (quitando el marcador de facts.yaml para importarlas como
-        # nuevas, o borrándolas del perfil).
-        _avisar_una_vez(("pendiente", MEMORY_PATH, _huella_perfil(texto)),
-                        f"[B.A.I] Aviso: {FACTS_PATH} lleva un marcador de migración de otra versión que no reconozco. "
-                        f"{len(hojas) - len(ya_migradas)} dato(s) de {MEMORY_PATH} quedan pendientes de reconciliar: "
-                        f"no los importo ni los uso, por si ya se olvidaron. Para importarlos como nuevos quita "
-                        f"'perfil_migrado' de facts.yaml; para descartarlos, bórralos del perfil.")
-        return 0
+    ya_migradas, inciertas, reconocidos, motivo = _clasificar_hojas(texto, perfil, hojas, migradas, hechos)
     nombres = _nombres_legado(hojas)
     pendientes = [(ruta, valor, nombre) for i, ((ruta, valor), (nombre, _)) in enumerate(zip(hojas, nombres))
-                  if i not in ya_migradas]
+                  if i not in ya_migradas and i not in inciertas]
     huellas_nuevas = {_huella(ruta, valor) for i, (ruta, valor) in enumerate(hojas) if i in ya_migradas} - migradas
-    if motivo == "perfil completo":
-        # El perfil entero queda identificado con huellas propias y el marcador ajeno
-        # reconocido se absorbe: lo que se añada al perfil más adelante sí se importará.
+    if reconocidos:
+        # Un marcador ajeno que identifica ESTE perfil se sustituye por huellas propias
+        # (sólo ese: los que no se reconocen se conservan tal cual).
         huellas_nuevas.add(_huella_perfil(texto))
-        migradas -= _marcadores_ajenos(migradas)
+        migradas -= reconocidos
         _avisar_una_vez(("marcado", MEMORY_PATH, _huella_perfil(texto)),
                         f"[B.A.I] El perfil heredado ya está marcado como migrado ({motivo}): no reimporto sus "
                         f"{len(hojas)} dato(s); sus hechos siguen en la memoria y el perfil se conserva en copia.")
+    if inciertas:
+        claves = ", ".join(f"'{nombres[i][0]}'" for i in sorted(inciertas))
+        _avisar_una_vez(("inciertas", MEMORY_PATH, _huella_perfil(texto)),
+                        f"[B.A.I] Aviso: {len(inciertas)} dato(s) de user_profile.yaml están pendientes de conciliar "
+                        f"({claves}). La memoria tiene una marca de migración de otra versión que no sé interpretar, "
+                        f"así que podrían ser hechos que ya migraste y después olvidaste. No los importo ni los uso "
+                        f"como contexto, y dejo user_profile.yaml intacto. Si quieres conservar alguno, dímelo con "
+                        f"'recuerda que <clave> es <valor>'.")
 
     if not pendientes:
-        # Todo ya migrado: sólo falta anotar huellas que faltaran y (re)intentar vaciar el perfil.
+        # Nada nuevo con certeza: sólo anotar huellas que faltaran y, si no queda nada
+        # pendiente de conciliar, (re)intentar vaciar el perfil.
+        if inciertas:
+            return 0               # con datos pendientes de conciliar no se toca ni el perfil ni el almacén
         if huellas_nuevas:
             try:
                 _respaldar_perfil(texto)
@@ -488,6 +497,8 @@ def migrar_perfil_legado():
         return 0
     print(f"[B.A.I] Memoria heredada migrada: {importados} dato(s) de user_profile.yaml ahora son hechos "
           f"(consultables, editables y olvidables). Copia del perfil original: {respaldo}")
+    if inciertas:
+        return importados          # el perfil se conserva: aún tiene datos pendientes de conciliar
     try:
         _vaciar_perfil()
     except OSError as e:
@@ -716,60 +727,103 @@ def _apartar_corrupto(path, motivo):
         return False
 
 
-def _fusionar(acumulado, nuevos):
-    """Une el historial cargado con el de otro fichero. Los ficheros de rescate
-    y historial.json son acumulativos: si el nuevo EMPIEZA por lo ya acumulado
-    lo sustituye en vez de añadirse, así la consolidación es idempotente aunque
-    un fichero ya absorbido no se haya podido borrar."""
-    if len(nuevos) >= len(acumulado) and nuevos[:len(acumulado)] == acumulado:
-        return list(nuevos)
-    return acumulado + nuevos
+_SUFIJO_MANIFIESTO = ".absorbidos"   # no termina en .json: nunca se carga como sesión
+
+
+def _leer_manifiesto(destino):
+    """{nombre_fichero: sha256} de lo que `destino` ya contiene. {} si no hay o es ilegible."""
+    ruta = destino + _SUFIJO_MANIFIESTO
+    if not os.path.exists(ruta):
+        return {}
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"[B.A.I] Aviso: no puedo leer {ruta} ({e}); lo ignoro.")
+        return {}
+    if not isinstance(datos, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in datos.items()):
+        print(f"[B.A.I] Aviso: {ruta} tiene un formato inesperado; lo ignoro.")
+        return {}
+    return datos
 
 
 def load_full_history():
+    """Carga y consolida el historial de forma idempotente.
+
+    Se leen historial.json y los *.json del directorio (sesiones antiguas y de
+    rescate), se escribe todo en el destino de esta sesión y después se borran
+    los ficheros absorbidos. Si alguno no se puede borrar, queda anotado (por
+    nombre y huella de contenido) en el manifiesto '<destino>.absorbidos', y
+    los arranques siguientes lo saltan mientras su contenido siga contenido en
+    un destino que se haya podido leer. Así ni un historial dañado que no se
+    puede apartar ni un borrado que falla duplican sesiones."""
     messages = []
-    archivos_a_borrar = []
     _HISTORIAL_PROTEGIDO.pop(SESSION_FILE, None)
 
     os.makedirs(HISTORY_DIR, exist_ok=True)
 
+    absorbidos = {}   # nombre -> huella de lo que algún destino leído ya contiene
     # Cargar historial activo si existe
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 messages.extend(_turnos_validos(json.load(f)))
+            absorbidos.update(_leer_manifiesto(SESSION_FILE))   # sólo si el principal se ha podido leer
         except (ValueError, UnicodeDecodeError) as e:       # JSON roto o estructura inesperada
             _apartar_corrupto(SESSION_FILE, e)                # si no se puede apartar, queda protegido
         except OSError as e:                                  # no se puede leer: no se toca
             _proteger_historial(f"no puedo leer el historial ({e})")
 
-    # Cargar sesiones anteriores y de rescate (los ficheros ilegibles se conservan sin tocar)
+    # Leer sesiones anteriores y de rescate (los ficheros ilegibles se conservan sin tocar)
+    leidos = []   # (ruta, nombre, huella, turnos)
     for file in sorted(os.listdir(HISTORY_DIR)):
         if file.endswith(".json") and file != os.path.basename(SESSION_FILE):
             path = os.path.join(HISTORY_DIR, file)
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    messages = _fusionar(messages, _turnos_validos(json.load(f)))
-                    archivos_a_borrar.append(path)
+                with open(path, "rb") as f:
+                    bruto = f.read()
+                turnos = _turnos_validos(json.loads(bruto.decode("utf-8")))
             except Exception as e:
                 print(f"[B.A.I] Error cargando {file}: {e}")
+                continue
+            leidos.append((path, file, hashlib.sha256(bruto).hexdigest(), turnos))
+            absorbidos.update(_leer_manifiesto(path))
+
+    for path, nombre, huella, turnos in leidos:
+        if absorbidos.get(nombre) != huella:          # ya contenido en un destino leído: no se repite
+            messages.extend(turnos)
 
     messages = messages[-MAX_MESSAGES:]
 
     # Consolidación: todo lo cargado se escribe en el destino de esta sesión
     # (historial.json o, si está protegido, su fichero de rescate) y sólo
-    # entonces se borran los ficheros ya absorbidos. Así un historial dañado
-    # que siga sin poder apartarse no hace que las sesiones se dupliquen.
+    # entonces se borran los ficheros ya absorbidos.
     if not save_chat_history(messages):
         return messages   # no se borran las sesiones antiguas si no se ha podido consolidar
 
-    for path in archivos_a_borrar:
+    destino = _destino_historial()
+    pendientes = {}
+    for path, nombre, huella, _ in leidos:
         try:
             os.remove(path)
         except Exception as e:
-            # Sin consecuencias para la integridad: el fichero ya está absorbido y,
-            # al ser acumulativo, en el próximo arranque _fusionar lo reconocerá.
-            print(f"[B.A.I] Aviso: no puedo borrar el historial ya absorbido {path} ({e}); no se duplicará.")
+            print(f"[B.A.I] Error borrando {path}: {e}")
+            pendientes[nombre] = huella
+            continue
+        try:
+            if os.path.exists(path + _SUFIJO_MANIFIESTO):
+                os.remove(path + _SUFIJO_MANIFIESTO)
+        except OSError:
+            pass   # un manifiesto huérfano se ignora: sólo cuentan los de destinos leídos
+    manifiesto = destino + _SUFIJO_MANIFIESTO
+    try:
+        if pendientes:
+            _escribir_atomico(manifiesto, json.dumps(pendientes, indent=2, sort_keys=True), ".absorbidos-")
+        elif os.path.exists(manifiesto):
+            os.remove(manifiesto)
+    except OSError as e:
+        print(f"[B.A.I] Aviso: no he podido anotar los ficheros ya absorbidos ({e}); "
+              f"podrían volver a cargarse si tampoco se pueden borrar.")
 
     return messages
 
@@ -777,9 +831,8 @@ def load_full_history():
 def _contexto_perfil():
     """Texto con los datos del perfil (user_profile.yaml) que AÚN no se han
     migrado a hechos. Nunca lanza: un perfil ausente o dañado no debe impedir
-    conversar. Las hojas ya migradas (por huella, por marcador del perfil
-    completo o por marcador de otra versión) no se inyectan: si se olvidaron
-    como hecho, no deben volver a llegar al motor por esta vía."""
+    conversar. Ni las hojas ya migradas ni las pendientes de conciliación se
+    inyectan: si se olvidaron como hecho, no deben volver a llegar al motor."""
     texto_perfil, perfil = _leer_perfil_texto()
     if not perfil:
         return []
@@ -790,9 +843,12 @@ def _contexto_perfil():
     else:
         planas = [(ruta, ", ".join(_texto_legado(v) for v in valor) if isinstance(valor, list) else _texto_legado(valor))
                   for ruta, valor in hojas]
-        ya, motivo = _clasificar_hojas(texto_perfil, perfil, planas, migradas)
-        if motivo == "pendiente":
-            ya = set(range(len(hojas)))   # entradas inciertas: tampoco se inyectan
+        try:
+            hechos = _leer_hechos()
+        except (MemoriaHechosInvalida, ErrorLecturaMemoria):
+            hechos = {}
+        migradas_idx, inciertas, _, _ = _clasificar_hojas(texto_perfil, perfil, planas, migradas, hechos)
+        ya = migradas_idx | inciertas     # lo incierto podría estar olvidado: nunca se inyecta
     texto = []
     for i, (ruta, valor) in enumerate(hojas):
         if i in ya:

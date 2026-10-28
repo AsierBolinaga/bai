@@ -170,35 +170,32 @@ def test_proteccion_no_afecta_a_otro_historial(historial, monkeypatch, tmp_path)
 
 
 # --------------------------------------------------------------------------- procesos nuevos con fallo persistente
-def _sesion_cli(tmp_path, entradas, historial_inamovible, rescates_imborrables=False):
+def _sesion_cli(tmp_path, entradas, historial_inamovible, sin_borrar=False):
     """Una sesión completa de la CLI real (backend controlado) en un intérprete nuevo.
-    Con historial_inamovible, CADA proceso simula que historial.json no se puede
-    renombrar; con rescates_imborrables, además, que ningún fichero de rescate se puede borrar."""
+    Con historial_inamovible, CADA proceso simula que historial.json no se puede renombrar;
+    con sin_borrar, que ningún fichero del directorio de historial se puede borrar."""
     import subprocess
     import sys
     from tests.test_cli import _programa_sesion
     programa = _programa_sesion(tmp_path, entradas, tmp_path / "recibido.json")
-    parche = ""
+    parches = ""
     if historial_inamovible:
-        parche += """
-_real_replace = os.replace
+        parches += """_real_replace = os.replace
 def _replace(origen, destino):
     if str(origen) == m.SESSION_FILE:
         raise OSError("no se puede renombrar (simulado)")
     return _real_replace(origen, destino)
 os.replace = _replace
 """
-    if rescates_imborrables:
-        parche += """
-_real_remove = os.remove
+    if sin_borrar:
+        parches += """_real_remove = os.remove
 def _remove(ruta):
-    if "historial-rescate-" in str(ruta):
+    if os.path.dirname(str(ruta)) == m.HISTORY_DIR:
         raise OSError("no se puede borrar (simulado)")
     return _real_remove(ruta)
 os.remove = _remove
 """
-    if parche:
-        programa = programa.replace("import os\n", "import os\n" + parche, 1)
+    programa = programa.replace("import os\n", "import os\n" + parches, 1)
     r = subprocess.run([sys.executable, "-c", programa], cwd=str(tmp_path), capture_output=True, text=True,
                        timeout=60, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
     assert r.returncode == 0, r.stderr
@@ -234,39 +231,123 @@ def test_sesiones_nuevas_con_historial_corrupto_inamovible_no_duplican(tmp_path)
     assert turnos == ["mensaje 1", "mensaje 2", "mensaje 3", "mensaje 4"]
 
 
-def test_sesiones_nuevas_con_ambos_fallos_activos_no_duplican(tmp_path):
-    """historial.json corrupto e inamovible Y los rescates absorbidos no se pueden borrar:
-    la consolidación sigue siendo idempotente en procesos nuevos."""
+# --------------------------------------------------------------------------- consolidación idempotente con borrados fallidos
+def _cargar_como_proceso_nuevo():
+    memoria._HISTORIAL_PROTEGIDO.clear()     # estado de un intérprete recién arrancado
+    return memoria.load_full_history()
+
+
+def _sin_borrar(mp, directorio):
+    real = os.remove
+
+    def remove(ruta):
+        if os.path.dirname(str(ruta)) == str(directorio):
+            raise OSError("no se puede borrar (simulado)")
+        return real(ruta)
+    mp.setattr(os, "remove", remove)
+
+
+def test_borrado_fallido_de_sesiones_antiguas_no_duplica(historial, monkeypatch):
+    (historial / "historial.json").write_text("[]", encoding="utf-8")
+    (historial / "2024-01-01.json").write_text(json.dumps([{"role": "user", "content": "antigua"}]), encoding="utf-8")
+    _sin_borrar(monkeypatch, historial)
+    for _ in range(3):
+        assert _cargar_como_proceso_nuevo() == [{"role": "user", "content": "antigua"}]
+    assert (historial / "2024-01-01.json").exists()                       # no se pudo borrar
+    manifiesto = json.loads((historial / "historial.json.absorbidos").read_text())
+    assert list(manifiesto) == ["2024-01-01.json"]
+
+
+def test_ambos_fallos_activos_varias_sesiones_sin_duplicados(historial):
+    roto = historial / "historial.json"
+    roto.write_text("[{roto", encoding="utf-8")
+    real_replace = os.replace
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("simulado"))
+                   if str(a) == str(roto) else real_replace(a, b))
+        _sin_borrar(mp, historial)
+        for n in range(1, 5):
+            hist = _cargar_como_proceso_nuevo()
+            assert [m["content"] for m in hist] == [f"s{i}" for i in range(1, n)]
+            hist.append({"role": "user", "content": f"s{n}"})
+            assert memoria.save_chat_history(hist)
+    assert roto.read_text() == "[{roto"
+    # con los fallos resueltos todo se consolida una sola vez
+    assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["s1", "s2", "s3", "s4"]
+    assert sorted(p.name for p in historial.iterdir() if not p.name.startswith("historial.json.corrupto-")) == ["historial.json"]
+
+
+def test_archivo_absorbido_cuyo_contenido_cambia_se_vuelve_a_cargar(historial, monkeypatch):
+    """El manifiesto identifica por contenido: si el fichero cambia, no se pierde lo nuevo."""
+    (historial / "historial.json").write_text("[]", encoding="utf-8")
+    vieja = historial / "2024-01-01.json"
+    vieja.write_text(json.dumps([{"role": "user", "content": "a"}]), encoding="utf-8")
+    with pytest.MonkeyPatch.context() as mp:
+        _sin_borrar(mp, historial)
+        _cargar_como_proceso_nuevo()
+    vieja.write_text(json.dumps([{"role": "user", "content": "b"}]), encoding="utf-8")
+    assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["a", "b"]
+    assert not vieja.exists() and not (historial / "historial.json.absorbidos").exists()
+
+
+def test_manifiesto_de_un_principal_ilegible_no_oculta_datos(historial, monkeypatch):
+    """Si el destino que dice contener un fichero no se puede leer, ese fichero se carga."""
+    roto = historial / "historial.json"
+    roto.write_text("[{roto", encoding="utf-8")
+    vieja = historial / "2024-01-01.json"
+    vieja.write_text(json.dumps([{"role": "user", "content": "a"}]), encoding="utf-8")
+    import hashlib
+    (historial / "historial.json.absorbidos").write_text(
+        json.dumps({"2024-01-01.json": hashlib.sha256(vieja.read_bytes()).hexdigest()}))
+    real_replace = os.replace
+    monkeypatch.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("simulado"))
+                        if str(a) == str(roto) else real_replace(a, b))
+    assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["a"]
+
+
+def test_manifiesto_ilegible_se_ignora_sin_perder_datos(historial, capsys):
+    (historial / "historial.json").write_text(json.dumps([{"role": "user", "content": "x"}]), encoding="utf-8")
+    (historial / "historial.json.absorbidos").write_text("{roto", encoding="utf-8")
+    assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["x"]
+    assert "lo ignoro" in capsys.readouterr().out
+
+
+def test_sin_fallos_no_quedan_manifiestos(historial):
+    (historial / "historial.json").write_text("[]", encoding="utf-8")
+    (historial / "2024-01-01.json").write_text(json.dumps([{"role": "user", "content": "a"}]), encoding="utf-8")
+    _cargar_como_proceso_nuevo()
+    assert sorted(p.name for p in historial.iterdir()) == ["historial.json"]
+
+
+def test_procesos_cli_repetidos_con_ambos_fallos_activos(tmp_path):
+    """historial.json dañado e inamovible + ningún fichero borrable, en cada proceso:
+    el historial que ve el motor y el último rescate no tienen duplicados."""
     hist = tmp_path / "hist"
     hist.mkdir()
     roto = hist / "historial.json"
     roto.write_text('[{"role": "user", "content": "valioso"}, {rot', encoding="utf-8")
     bytes_rotos = roto.read_bytes()
-    for n in (1, 2, 3, 4):
-        out = _sesion_cli(tmp_path, [f"mensaje {n}", "salir"], historial_inamovible=True, rescates_imborrables=True)
-        assert "no tocaré" in out and roto.read_bytes() == bytes_rotos
-        if n > 1:
-            assert "no puedo borrar el historial ya absorbido" in out
+    esperados = []
+    for n in range(1, 5):
+        out = _sesion_cli(tmp_path, [f"mensaje {n}", "salir"], historial_inamovible=True, sin_borrar=True)
+        assert "no tocaré" in out
+        assert ("no se puede borrar" in out) == (n > 1)                # desde la 2ª hay rescates que borrar
+        esperados.append(f"mensaje {n}")
+        recibido = json.loads((tmp_path / "recibido.json").read_text(encoding="utf-8"))
+        assert [m["content"] for m in recibido if m["role"] == "user"] == esperados      # contexto sin duplicados
+        assert roto.read_bytes() == bytes_rotos
         rescates = sorted(hist.glob("historial-rescate-*.json"))
-        assert len(rescates) == n                                          # se acumulan, pero...
-        turnos = [m["content"] for m in json.loads(rescates[-1].read_text(encoding="utf-8")) if m["role"] == "user"]
-        assert turnos == [f"mensaje {i}" for i in range(1, n + 1)]         # ...el último lo contiene todo sin duplicar
-    recibido = json.loads((tmp_path / "recibido.json").read_text(encoding="utf-8"))
-    assert [m["content"] for m in recibido if m["role"] == "user"] == ["mensaje 1", "mensaje 2", "mensaje 3", "mensaje 4"]
-    # ambos fallos desaparecen: todo se consolida una sola vez y los rescates se borran
-    out = _sesion_cli(tmp_path, ["mensaje 5", "salir"], historial_inamovible=False)
-    assert not list(hist.glob("historial-rescate-*.json"))
+        assert len(rescates) == n                                                       # no se pueden borrar...
+        ultimo = json.loads(rescates[-1].read_text(encoding="utf-8"))
+        assert [m["content"] for m in ultimo if m["role"] == "user"] == esperados       # ...pero no se repiten
+        if n > 1:
+            manifiesto = json.loads((hist / (rescates[-1].name + ".absorbidos")).read_text())
+            assert sorted(manifiesto) == [r.name for r in rescates[:-1]]                # acumulativo
+
+    # Fallos resueltos: una sola consolidación, sin duplicados y sin ficheros sobrantes
+    out = _sesion_cli(tmp_path, ["mensaje 5", "salir"], historial_inamovible=False, sin_borrar=False)
     turnos = [m["content"] for m in json.loads(roto.read_text(encoding="utf-8")) if m["role"] == "user"]
-    assert turnos == [f"mensaje {i}" for i in range(1, 6)]
-
-
-def test_fusion_de_ficheros_acumulativos_y_no_acumulativos(historial):
-    """Un fichero que empieza por lo ya acumulado lo sustituye; uno distinto se añade."""
-    (historial / "historial.json").write_text("[]", encoding="utf-8")
-    a = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "ok"}]
-    b = a + [{"role": "user", "content": "b"}, {"role": "assistant", "content": "ok"}]
-    otro = [{"role": "user", "content": "z"}, {"role": "assistant", "content": "ok"}]
-    (historial / "2024-01-01.json").write_text(json.dumps(a), encoding="utf-8")
-    (historial / "2024-01-02.json").write_text(json.dumps(b), encoding="utf-8")
-    (historial / "2024-01-03.json").write_text(json.dumps(otro), encoding="utf-8")
-    assert [m["content"] for m in memoria.load_full_history() if m["role"] == "user"] == ["a", "b", "z"]
+    assert turnos == esperados + ["mensaje 5"]
+    copias = list(hist.glob("historial.json.corrupto-*.bak"))
+    assert len(copias) == 1 and copias[0].read_bytes() == bytes_rotos
+    assert sorted(p.name for p in hist.iterdir() if p not in copias) == ["historial.json"]
