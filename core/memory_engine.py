@@ -278,9 +278,13 @@ def _huellas_perfil_completo(texto, perfil):
     return huellas
 
 
+_RE_MARCADOR_PROPIO = re.compile(r"^(?:hoja|perfil):[0-9a-f]{64}$")
+
+
 def _marcadores_ajenos(marcadores):
-    """Marcadores escritos por otra versión (sin etiqueta 'hoja:'/'perfil:')."""
-    return {m for m in marcadores if ":" not in m}
+    """Marcadores que no son huellas propias bien formadas ('hoja:'/'perfil:' +
+    sha256). Cualquier otra cosa —con o sin ':'— se considera de otra versión."""
+    return {m for m in marcadores if not _RE_MARCADOR_PROPIO.match(m)}
 
 
 def _ya_guardada(nombre, valor, hechos):
@@ -301,8 +305,9 @@ def _clasificar_hojas(texto, perfil, hojas, marcadores, hechos):
     - migradas: índices ya importados con certeza: huella 'hoja:' propia, huella
       'perfil:' propia, o marcador ajeno que coincide con el perfil completo
       tal y como está (entonces TODAS), o valor ya presente en los hechos;
-    - inciertas: sólo cuando hay marcadores de otra versión que no sé
-      interpretar: hojas que podrían ser hechos ya migrados y luego olvidados.
+    - inciertas: sólo cuando hay marcadores que no son huellas propias bien
+      formadas (con o sin ':') y no identifican este perfil: hojas que podrían
+      ser hechos ya migrados y luego olvidados.
       No se importan, no se inyectan y el perfil no se toca: quedan pendientes
       de conciliación (el usuario decide con 'recuerda que X es Y');
     - reconocidos: marcadores ajenos identificados (pueden sustituirse por
@@ -310,11 +315,9 @@ def _clasificar_hojas(texto, perfil, hojas, marcadores, hechos):
     todas = set(range(len(hojas)))
     if not marcadores:
         return set(), set(), set(), None
-    if _huella_perfil(texto) in marcadores:
-        return todas, set(), set(), "perfil completo"
     ajenos = _marcadores_ajenos(marcadores)
-    reconocidos = ajenos & _huellas_perfil_completo(texto, perfil)
-    if reconocidos:
+    reconocidos = ajenos & _huellas_perfil_completo(texto, perfil)   # identifica ESTE perfil: certeza
+    if _huella_perfil(texto) in marcadores or reconocidos:
         return todas, set(), reconocidos, "perfil completo"
     migradas = {i for i, (ruta, valor) in enumerate(hojas) if _huella(ruta, valor) in marcadores}
     if not ajenos:

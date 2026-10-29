@@ -351,3 +351,75 @@ def test_procesos_cli_repetidos_con_ambos_fallos_activos(tmp_path):
     copias = list(hist.glob("historial.json.corrupto-*.bak"))
     assert len(copias) == 1 and copias[0].read_bytes() == bytes_rotos
     assert sorted(p.name for p in hist.iterdir() if p not in copias) == ["historial.json"]
+
+
+def test_procesos_cli_main_recuperado_con_borrado_aun_fallido(tmp_path):
+    """Fase 1: historial.json dañado e inamovible + borrados imposibles. Fase 2: el
+    principal ya se puede apartar pero los rescates siguen sin poder borrarse.
+    Fase 3: sin fallos. En ninguna sesión se duplica nada."""
+    hist = tmp_path / "hist"
+    hist.mkdir()
+    roto = hist / "historial.json"
+    roto.write_text('[{"role": "user", "content": "valioso"}, {rot', encoding="utf-8")
+    bytes_rotos = roto.read_bytes()
+    esperados = []
+
+    def sesion(n, inamovible, sin_borrar):
+        _sesion_cli(tmp_path, [f"mensaje {n}", "salir"], historial_inamovible=inamovible, sin_borrar=sin_borrar)
+        esperados.append(f"mensaje {n}")
+        recibido = json.loads((tmp_path / "recibido.json").read_text(encoding="utf-8"))
+        assert [m["content"] for m in recibido if m["role"] == "user"] == esperados[:-1] + [f"mensaje {n}"]
+
+    for n in (1, 2, 3):
+        sesion(n, inamovible=True, sin_borrar=True)
+    rescates = sorted(hist.glob("historial-rescate-*.json"))
+    assert len(rescates) == 3 and roto.read_bytes() == bytes_rotos
+
+    for n in (4, 5, 6):                                   # el principal se recupera; los rescates no se pueden borrar
+        sesion(n, inamovible=False, sin_borrar=True)
+        copias = list(hist.glob("historial.json.corrupto-*.bak"))
+        assert len(copias) == 1 and copias[0].read_bytes() == bytes_rotos
+        turnos = [m["content"] for m in json.loads(roto.read_text(encoding="utf-8")) if m["role"] == "user"]
+        assert turnos == esperados                        # consolidado en historial.json, sin duplicados
+        assert sorted(hist.glob("historial-rescate-*.json")) == rescates   # siguen ahí, sin borrar...
+        manifiesto = json.loads((hist / "historial.json.absorbidos").read_text())
+        assert sorted(manifiesto) == [r.name for r in rescates]             # ...pero anotados como absorbidos
+
+    sesion(7, inamovible=False, sin_borrar=False)        # sin fallos: se limpia todo de una vez
+    turnos = [m["content"] for m in json.loads(roto.read_text(encoding="utf-8")) if m["role"] == "user"]
+    assert turnos == esperados
+    assert sorted(p.name for p in hist.iterdir() if not p.name.startswith("historial.json.corrupto-")) == ["historial.json"]
+
+
+@pytest.mark.parametrize("destino,absorbido", [("0-primero.json", "9-ultimo.json"), ("9-ultimo.json", "0-primero.json")])
+def test_manifiesto_funciona_sea_cual_sea_el_orden_de_carga(historial, destino, absorbido):
+    """El fichero absorbido se salta aunque su nombre se ordene antes o después del destino que lo contiene."""
+    import hashlib
+    (historial / "historial.json").write_text("[]", encoding="utf-8")
+    (historial / absorbido).write_text(json.dumps([{"role": "user", "content": "a"}]), encoding="utf-8")
+    (historial / destino).write_text(json.dumps([{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]),
+                                     encoding="utf-8")
+    (historial / (destino + ".absorbidos")).write_text(
+        json.dumps({absorbido: hashlib.sha256((historial / absorbido).read_bytes()).hexdigest()}))
+    assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["a", "b"]
+    assert sorted(p.name for p in historial.iterdir()) == ["historial.json"]
+
+
+def test_manifiesto_en_cadena_con_borrados_parciales(historial):
+    """R1 absorbido por R2 (manifiesto), R2 absorbido por R3; R2 se borró pero R1 y R3 no:
+    el manifiesto acumulativo de R3 sigue cubriendo a R1."""
+    import hashlib
+    (historial / "historial.json").write_text("[]", encoding="utf-8")
+    r1 = historial / "historial-rescate-1.json"
+    r1.write_text(json.dumps([{"role": "user", "content": "a"}]), encoding="utf-8")
+    r3 = historial / "historial-rescate-3.json"
+    r3.write_text(json.dumps([{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]), encoding="utf-8")
+    (historial / "historial-rescate-3.json.absorbidos").write_text(json.dumps({
+        "historial-rescate-1.json": hashlib.sha256(r1.read_bytes()).hexdigest(),
+        "historial-rescate-2.json": "ya-no-existe"}))
+    with pytest.MonkeyPatch.context() as mp:
+        _sin_borrar(mp, historial)
+        for _ in range(3):
+            assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["a", "b"]
+    manifiesto = json.loads((historial / "historial.json.absorbidos").read_text())
+    assert sorted(manifiesto) == ["historial-rescate-1.json", "historial-rescate-3.json"]

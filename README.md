@@ -411,7 +411,9 @@ backend (online or offline):
   the old profile is restored later. Stores whose `perfil_migrado` was written
   by another version are honoured and their facts stay usable. If the marker
   identifies the current profile (a whole-profile digest), the profile counts
-  as migrated. If B.A.I cannot interpret the marker, every profile entry that
+  as migrated. Any other marker — anything that is not one of B.A.I's own
+  well-formed fingerprints (`hoja:`/`perfil:` + SHA-256), with or without a
+  `:` — is unrecognized: every profile entry that
   is not already a stored fact stays **pending reconciliation**: it is not
   imported, not injected into the context, and `user_profile.yaml` is left
   untouched — it might be a fact that was migrated and later forgotten. B.A.I

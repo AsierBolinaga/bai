@@ -1425,3 +1425,51 @@ def test_marcador_no_reconocido_en_procesos_nuevos_con_fallo_persistente(tmp_pat
     assert not list(tmp_path.glob("perfil.yaml.legado-*.bak"))
     datos = yaml.safe_load((tmp_path / "facts.yaml").read_text(encoding="utf-8"))
     assert datos["hechos"] == {} and datos["perfil_migrado"] == ["0123456789abcdef0123456789abcdef"]
+
+
+# =========================================================================== marcadores con ':' no reconocidos
+@pytest.mark.parametrize("marcador", [
+    "hoja:no-es-una-huella", "perfil:0123", "otra-version:abc", "hoja:" + "g" * 64, "PERFIL:" + "0" * 64,
+    "hoja:" + "0" * 63, "v2:" + hashlib.sha256(b"x").hexdigest(), "deadbeef", "",
+])
+def test_marcador_no_reconocido_con_o_sin_dos_puntos_deja_pendiente(_almacen_temporal, marcador, capsys):
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    original = _almacen_temporal.perfil.read_bytes()
+    _almacen_marcado(_almacen_temporal, [marcador] if marcador else [""])
+    hechos_original = _almacen_temporal.hechos.read_bytes()
+    for _ in range(2):
+        assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+        assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+        assert "camper" not in memoria.get_memory_context()
+    assert hechos_en_disco() == {"gato": "Mishi"}                             # nada importado
+    assert _almacen_temporal.perfil.read_bytes() == original                  # ni vaciado ni reescrito
+    assert _almacen_temporal.hechos.read_bytes() == hechos_original           # marcador conservado tal cual
+    assert not list(_almacen_temporal.dir.glob("user_profile.yaml.legado-*.bak"))
+    assert capsys.readouterr().out.count("pendientes de conciliar ('furgoneta')") == 1
+
+
+def test_marcador_no_reconocido_no_impide_reconocer_este_perfil(_almacen_temporal):
+    """Un marcador ajeno que SÍ identifica el perfil actual da certeza aunque haya otros irreconocibles."""
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    sha = hashlib.sha256(_texto_perfil().encode()).hexdigest()
+    _almacen_marcado(_almacen_temporal, ["otra-version:abc", sha])
+    assert memoria.migrar_perfil_legado() == 0
+    assert hechos_en_disco() == {"gato": "Mishi"}
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}   # migrado con certeza
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    assert "otra-version:abc" in datos["perfil_migrado"] and sha not in datos["perfil_migrado"]      # el ajeno se conserva
+
+
+def test_huellas_propias_bien_formadas_de_migraciones_anteriores_no_bloquean_lo_nuevo(_almacen_temporal):
+    """'hoja:'/'perfil:' + sha256 son registros propios de migraciones pasadas: lo nuevo se importa."""
+    _almacen_temporal.perfil.write_text(_texto_perfil({"aprendido_durante_sesion": {"perro": "Rex"}}), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, ["hoja:" + "a" * 64, "perfil:" + "0" * 64])
+    assert memoria.migrar_perfil_legado() == 1
+    assert hechos_en_disco() == {"gato": "Mishi", "perro": "Rex"}
+
+
+def test_alias_legado_con_huella_mal_formada_queda_pendiente(_almacen_temporal):
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, ["no-hex"], clave="legado_migrado")
+    assert memoria.migrar_perfil_legado() == 0
+    assert hechos_en_disco() == {"gato": "Mishi"} and "camper" not in memoria.get_memory_context()
