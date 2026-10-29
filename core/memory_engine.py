@@ -26,6 +26,7 @@ import os
 import json
 import re
 import shutil
+import stat
 import tempfile
 import yaml
 from datetime import datetime, timezone
@@ -206,6 +207,15 @@ def _escribir_atomico(ruta, contenido, prefijo):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(contenido)
+        # mkstemp crea el temporal como 0600: se conservan los permisos del fichero
+        # que se reemplaza (o los habituales según umask si es nuevo).
+        try:
+            modo = stat.S_IMODE(os.stat(ruta).st_mode)
+        except FileNotFoundError:
+            umask = os.umask(0)
+            os.umask(umask)
+            modo = 0o666 & ~umask
+        os.chmod(temporal, modo)
         os.replace(temporal, ruta)
     except BaseException:
         try:

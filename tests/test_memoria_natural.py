@@ -1587,3 +1587,17 @@ def test_marcador_desconocido_entre_procesos_lo_olvidado_no_vuelve(tmp_path, cla
     esperados = {"ajeno:vacio"} if not marcador else {v for v in marcador.values() if isinstance(v, str)} | {
         h for v in marcador.values() if isinstance(v, list) for h in v}
     assert all(any(m.endswith(e) for m in datos["perfil_migrado"]) for e in esperados)
+
+
+# =========================================================================== la escritura atómica conserva permisos
+def test_escritura_atomica_conserva_los_permisos_del_fichero(_almacen_temporal):
+    import stat
+    _almacen_temporal.perfil.chmod(0o640)
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"gato": "Mishi"}})
+    _almacen_temporal.perfil.chmod(0o640)
+    memoria.migrar_perfil_legado()                     # reescribe el perfil (vaciado) y crea facts.yaml
+    assert stat.S_IMODE(_almacen_temporal.perfil.stat().st_mode) == 0o640          # se conserva
+    umask = os.umask(0); os.umask(umask)
+    assert stat.S_IMODE(_almacen_temporal.hechos.stat().st_mode) == (0o666 & ~umask)   # nuevo: según umask
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    assert stat.S_IMODE(_almacen_temporal.hechos.stat().st_mode) == (0o666 & ~umask)
