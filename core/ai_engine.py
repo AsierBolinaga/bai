@@ -5,6 +5,7 @@ modelo según el modo de trabajo (online / offline).
 """
 import re
 
+from core.ayuda import AYUDA_BAI, es_peticion_ayuda
 from config.motors_config import PROJECT_ROOT
 from core.memory_commands import procesar_comando_memoria
 from core.memory_engine import get_memory_context
@@ -37,7 +38,14 @@ AUTORIZACION_ONLINE = ("Para autorizar el uso de servicios online escribe 'pasa 
                        "(B.A.I nunca lo hace por su cuenta).")
 
 _selector = None
+_avisador = print  # destino de los avisos de respaldo (la interfaz gráfica lo sustituye)
 ultima_respuesta = None  # RespuestaMotor del último turno generado (None si falló o fue un comando)
+
+
+def set_avisador(funcion):
+    """Cambia el destino de los avisos de respaldo; None restaura la consola."""
+    global _avisador
+    _avisador = funcion or print
 
 
 def get_selector():
@@ -144,6 +152,8 @@ def ask(user_input, chat_history, selector=None):
     Punto de entrada del asistente. Devuelve el texto de respuesta y añade el
     turno (user/assistant) a `chat_history` sólo si un motor ha respondido.
     """
+    if es_peticion_ayuda(user_input):
+        return AYUDA_BAI
     selector = selector or get_selector()
     if chat_history is None:
         chat_history = []
@@ -205,10 +215,10 @@ def ask(user_input, chat_history, selector=None):
     if respuesta.fallback_usado:
         descartados = ", ".join(f"{m} ({e})" for m, e in respuesta.errores)
         if respuesta.tipo == "online":
-            print(f"[B.A.I] Aviso: ningún motor local ha respondido ({descartados}). "
+            _avisador(f"[B.A.I] Aviso: ningún motor local ha respondido ({descartados}). "
                   f"Uso el motor online autorizado {respuesta.motor} [{respuesta.modelo}].")
         else:
-            print(f"[B.A.I] Aviso: motor principal no disponible ({descartados}). "
+            _avisador(f"[B.A.I] Aviso: motor principal no disponible ({descartados}). "
                   f"Respondo con {respuesta.motor} [{respuesta.modelo}].")
 
     # Turno completado: se persiste el historial. La memoria persistente NO se

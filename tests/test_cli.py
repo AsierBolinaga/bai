@@ -68,6 +68,18 @@ def cli(monkeypatch, tmp_path, selector_fake):
 
 
 # --------------------------------------------------------------------------- arranque y modo
+def test_ayuda_en_cli_sin_motores_ni_cambios_persistentes(cli, capsys):
+    from core.ayuda import AYUDA_BAI
+    for motor in cli.fake.motores.todos.values():
+        motor.disponible_ok = False
+    out = cli.ejecutar(["ayuda", "¿cómo funcionas?", "salir"], capsys)
+    assert out.count(AYUDA_BAI) == 2
+    assert cli.historial_guardado() == []
+    assert not cli.ruta_hechos.exists()
+    assert cli.selector.modo == "offline"
+    assert all(m.llamadas == [] for m in cli.fake.motores.todos.values())
+
+
 def test_arranque_muestra_politica_y_sale_guardando(cli, capsys):
     out = cli.ejecutar(["salir"], capsys)
     assert "Modo actual: OFFLINE — Sólo motores locales." in out

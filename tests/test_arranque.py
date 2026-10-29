@@ -51,6 +51,12 @@ def test_online_y_offline_son_excluyentes():
         arranque.preparar_arranque(["--online", "--offline"])
 
 
+def test_ui_es_opcional_y_la_consola_sigue_por_defecto():
+    assert arranque.analizar_argumentos([]).ui is False
+    assert arranque.analizar_argumentos(["--ui"]).ui is True
+    assert arranque.analizar_argumentos(["--ui", "--online"]).online is True
+
+
 def test_aislamiento_no_disponible_avisa_honestamente(monkeypatch):
     monkeypatch.setattr(aislamiento, "aislar_proceso", lambda: (False, "sólo disponible en Linux"))
     salidas = []

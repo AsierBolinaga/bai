@@ -7,7 +7,7 @@ chat_history = load_full_history()
 def run_assistant():
     print(f"[{nombre_ia}] Hola, {master_name}. Memoria de sesión cargada.")
     print(f"[{nombre_ia}] {describir_estado()}")
-    print(f"[{nombre_ia}] Comandos: 'pasa a modo offline' | 'pasa a modo online' | 'estado'")
+    print(f"[{nombre_ia}] Comandos: 'pasa a modo offline' | 'pasa a modo online' | 'estado' | 'ayuda'")
     print(f"[{nombre_ia}] Memoria: 'recuerda que X es Y' | '¿qué recuerdas?' | 'recuerda que ahora X es Z' | 'olvida X'")
 
     while True:

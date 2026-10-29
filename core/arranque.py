@@ -5,6 +5,7 @@ Preparación del arranque de B.A.I (usado por bai.py antes de cargar nada más).
   python bai.py --online          autoriza servicios online en esta sesión (sin
                                   aislamiento de proceso; prioridad local se mantiene)
   python bai.py --offline         fuerza el modo offline
+  python bai.py --ui              abre la ventana gráfica (tkinter) en vez de la consola
   python bai.py --aislamiento python
                                   usa la guardia Python en vez del namespace de red
                                   (permite "pasa a modo online" en la misma sesión)
@@ -26,6 +27,7 @@ def analizar_argumentos(argv=None):
     modo.add_argument("--online", action="store_true",
                       help="autoriza el uso de servicios online en esta sesión (los motores locales siguen teniendo prioridad)")
     modo.add_argument("--offline", action="store_true", help="fuerza el modo offline")
+    parser.add_argument("--ui", action="store_true", help="abre la interfaz gráfica en lugar de la consola")
     parser.add_argument("--aislamiento", choices=AISLAMIENTOS_VALIDOS, default=None,
                         help="nivel de aislamiento de red en modo offline (por defecto el de la configuración)")
     return parser.parse_args(argv)

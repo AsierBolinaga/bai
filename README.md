@@ -1,4 +1,4 @@
-# B.A.I
+# B.A.I — Boli Artificial Intelligence
 
 B.A.I. is a modular, private, and autonomous personal assistant. Its goal is to act as a natural, contextual, and extensible artificial intelligence system. B.A.I. operates offline by default, protecting the user's privacy, and offers online capabilities under explicit control. Its architecture enables the integration of multiple LLM engines, natural commands, personalized memory, and control over day-to-day tasks—both technical and personal.
 
@@ -100,7 +100,28 @@ calls the online motor, and GPT4All always runs with `allow_download=False`
 python bai.py                      # offline, process-isolated (default)
 python bai.py --online             # explicitly authorize online services for this session
 python bai.py --aislamiento python # offline with the Python guard (allows switching online in-session)
+python bai.py --ui                 # tkinter chat window instead of the console
 ```
+
+**Chat window (`--ui`)** — a tkinter window: conversation area, input
+box, a short description of B.A.I and buttons for *Offline*, *Online*,
+*Estado*, *Limpiar* and *Ayuda*. *Estado* displays the current mode and engine
+availability in the chat. *Ayuda* displays a local guide to conversation, modes,
+privacy, engines, persistent memory and session history, including how to switch
+between offline and online and the limits imposed by process isolation.
+Both the header description and the guide expand B.A.I as Boli Artificial Intelligence.
+The same guide is
+available by typing `ayuda`, `cómo funcionas` or `explícame cómo funcionas`
+in the window or console, even without any available engine.
+The dark theme includes rounded buttons and a rounded,
+resizable input field with a focus indicator. It uses the same `ask()` as the console, so memory
+requests, mode commands, offline guarantees and history behave identically; the
+*Online* button is the same explicit authorization as typing *"pasa a modo
+online"*. Messages are processed in a worker thread (the window never freezes),
+engine fallback notices appear in the conversation, and closing the window saves
+the history. The window connects to the display *before* the process isolation
+is applied, so an already open connection keeps working inside the namespace.
+Without a display, `--ui` exits with a message and the console keeps working.
 
 ---
 
@@ -228,12 +249,15 @@ Ambiguous requests ("recuerda eso", a value that conflicts with a stored one,
 ```
 core/
 ├── ai_engine.py         # Builds the context, handles mode commands, calls the selector
+├── ayuda.py             # Shared local description and help guide (no model required)
 ├── model_selector.py    # Chooses motor/model for the active mode, with fallback chain
 ├── network_guard.py     # Python-level guard: blocks non-local socket/DNS use in offline mode (fallback)
 ├── aislamiento.py       # Process-level isolation: private network namespace (kernel-enforced)
-├── arranque.py          # bai.py options (--online / --offline / --aislamiento) and isolation at startup
+├── arranque.py          # bai.py options (--online / --offline / --ui / --aislamiento) and isolation at startup
 ├── diagnostico.py       # CLI diagnostics: python -m core.diagnostico [--probar] [--bloquear-red]
 ├── assistant.py         # Main CLI
+├── ui_controlador.py    # Phase 8: window controller (no Tk): send, state, clear, save, worker thread
+├── ui_tk.py             # Phase 8: tkinter chat window on top of the controller
 ├── memory_engine.py     # Fact store (atomic, validated) + history + memory context
 ├── memory_commands.py   # Phase 7: natural-language memory requests (local, deterministic)
 ├── offline_engine.py    # Compatibility facade: force offline motors
@@ -447,7 +471,7 @@ backend (online or offline):
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
-8. **Visual interface (UI)**  
+8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command and local help, `python bai.py --ui`; full suite validated, window shown under a virtual display, real-screen and real-namespace runs are manual checks)
 9. **Voice system**  
 10. **Cross-platform compatibility**  
 11. **Full synchronization across devices** ✨ → version 1.0.0 reached
