@@ -446,7 +446,7 @@ backend (online or offline):
 4. **Controlled online mode (OpenAI)** – completed ✅  
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
-7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)  
+7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
 8. **Visual interface (UI)**  
 9. **Voice system**  
 10. **Cross-platform compatibility**  

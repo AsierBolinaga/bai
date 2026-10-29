@@ -500,7 +500,9 @@ def test_cli_frases_sin_intencion_de_memoria_van_al_motor_y_no_tocan_los_hechos(
     import json
     (tmp_path / "hist").mkdir()
     recibido = tmp_path / "recibido.json"
-    _sesion_nueva(tmp_path, ["recuerda que mi coche es rojo", "remember that my car is red", "salir"], recibido)
+    out = _sesion_nueva(tmp_path, ["recuerda que mi coche es rojo", "remember that my car is red",
+                                   "recuerda que el fondo es rojo", "salir"], recibido)
+    assert "Hecho guardado: fondo = rojo" in out                            # 'fondo' ya guardado antes
     antes = (tmp_path / "facts.yaml").read_bytes()
     frases = ["mi coche ahora es azul", "my car is now blue", "cambia el fondo a azul"]
 
@@ -511,11 +513,11 @@ def test_cli_frases_sin_intencion_de_memoria_van_al_motor_y_no_tocan_los_hechos(
     mensajes = json.loads(recibido.read_text(encoding="utf-8"))
     assert [m["content"] for m in mensajes if m["role"] == "user"] == frases
     sistema = "\n".join(m["content"] for m in mensajes if m["role"] == "system")
-    assert "- coche: rojo" in sistema and "- car: red" in sistema          # los hechos intactos llegan al motor
-    assert (tmp_path / "facts.yaml").read_bytes() == antes
-    assert _hechos_de(tmp_path) == {"coche": "rojo", "car": "red"}
+    assert "- coche: rojo" in sistema and "- car: red" in sistema and "- fondo: rojo" in sistema   # hechos intactos
+    assert (tmp_path / "facts.yaml").read_bytes() == antes                 # byte a byte igual
+    assert _hechos_de(tmp_path) == {"coche": "rojo", "car": "red", "fondo": "rojo"}
     guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
     assert [m["content"] for m in guardado if m["role"] == "user"] == frases
 
-    out = _sesion_nueva(tmp_path, ["¿cuál es mi coche?", "what is my car?", "salir"], recibido)
-    assert "coche es rojo" in out and "car is red" in out
+    out = _sesion_nueva(tmp_path, ["¿cuál es mi coche?", "what is my car?", "¿cuál es mi fondo?", "salir"], recibido)
+    assert "coche es rojo" in out and "car is red" in out and "fondo es rojo" in out

@@ -1712,12 +1712,15 @@ def test_frases_sin_intencion_de_memoria_son_conversacion_aunque_el_dato_exista(
     hist = []
     ai.ask("recuerda que mi coche es rojo", hist)
     ai.ask("remember that my car is red", hist)
+    assert "Hecho guardado: fondo = rojo" in ai.ask("recuerda que el fondo es rojo", hist)   # 'fondo' ya guardado
     antes = bytes_en_disco()
     frases = ["mi coche ahora es azul", "my car is now blue", "cambia el fondo a azul"]
     for frase in frases:
-        assert ai.ask(frase, hist) == "respuesta de off_a"
+        assert ai.ask(frase, hist) == "respuesta de off_a"            # conversación normal: contesta el motor
+        assert bytes_en_disco() == antes                              # el fichero de hechos, byte a byte igual
     assert [m["content"] for m in hist if m["role"] == "user"] == frases
     recibidas = [llamada[0][-1]["content"] for llamada in fake.motores.todos["off_a"].llamadas]
     assert recibidas == frases
-    assert bytes_en_disco() == antes and hechos_en_disco() == {"coche": "rojo", "car": "red"}
+    assert hechos_en_disco() == {"coche": "rojo", "car": "red", "fondo": "rojo"}
     assert "coche es rojo" in ai.ask("¿cuál es mi coche?", hist) and "car is red" in ai.ask("what is my car?", hist)
+    assert "fondo es rojo" in ai.ask("¿cuál es mi fondo?", hist)

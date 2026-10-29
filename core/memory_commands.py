@@ -188,7 +188,7 @@ _FIN = r"(?:[,]?\s+por\s+favor|[,]?\s+please)?\s*[.!]*\s*$"
 _FIN_PREGUNTA = r"(?:[,]?\s+por\s+favor|[,]?\s+please)?\s*[.!?]*\s*$"
 _PREG = r"(?:[¿¡]\s*)?"
 _QUE = r"(?:\s+(?:que|de\s+que|that))?"
-_CORT_MEDIO = r"(?:\s*,\s*(?:por\s+favor|please)\s*,?|\s*,)?"   # "recuerda, por favor, que ..." 
+_CORT_MEDIO = r"(?:\s*,\s*(?:por\s+favor|please)\s*,?|\s*,)?"   # "recuerda, por favor, que ..."
 
 # Objeto de memoria explícito que convierte un verbo genérico en una petición de memoria.
 _OBJ_MEMORIA = (r"(?:(?:en|a|de)\s+)?(?:tu\s+|la\s+|mi\s+|your\s+|the\s+)?(?:memoria|memory)"
@@ -716,7 +716,7 @@ def _intentar_recordar(original, plano):
 
 # Peticiones de memoria reconocibles pero incompletas ("recuerda", "olvídalo",
 # "borra de tu memoria", "¿recuerdas?"): se aclaran LOCALMENTE, nunca van a un motor.
-_COLA_VACIA = r"(?:\s+(?:que|that|de\s+que|de|about|esto|this|eso|lo|it))?\s*[:,]?" 
+_COLA_VACIA = r"(?:\s+(?:que|that|de\s+que|de|about|esto|this|eso|lo|it))?\s*[:,]?"
 _P_INCOMPLETO = [
     (re.compile(_INI + r"(?:" + _V_RECORDAR + r"|(?P<v2>recuerdalo|recuerdala|memorizalo|memorizala|remember\s+it)"
                 r"|" + _V_GENERICO_STORE.replace("?P<verbo>", "?P<v3>") + r"\s*" + _OBJ + r")"
