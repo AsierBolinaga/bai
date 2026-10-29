@@ -456,3 +456,66 @@ def test_bai_sh_es_ejecutable():
     import os
     from config.motors_config import PROJECT_ROOT
     assert os.access(PROJECT_ROOT / "bai.sh", os.X_OK), "bai.sh debe conservar el bit de ejecución"
+
+
+# --------------------------------------------------------------------------- memoria: clave completa y conversación, en procesos nuevos
+def _sesion_nueva(tmp_path, entradas, recibido):
+    import subprocess
+    import sys
+    r = subprocess.run([sys.executable, "-c", _programa_sesion(tmp_path, entradas, recibido)],
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _hechos_de(tmp_path):
+    datos = yaml.safe_load((tmp_path / "facts.yaml").read_text(encoding="utf-8"))
+    return {clave: e["valor"] for clave, e in datos["hechos"].items()}
+
+
+def test_cli_actualizacion_ambigua_con_solo_viaje_en_procesos_nuevos(tmp_path):
+    import json
+    (tmp_path / "hist").mkdir()
+    recibido = tmp_path / "recibido.json"
+    out = _sesion_nueva(tmp_path, ["recuerda que mi viaje es en mayo", "salir"], recibido)
+    assert "Hecho guardado: viaje = en mayo" in out
+    antes = (tmp_path / "facts.yaml").read_bytes()
+
+    out = _sesion_nueva(tmp_path, ["actualiza en tu memoria mi viaje a Roma a julio",
+                                   "update the fact viaje a Roma to July", "salir"], recibido)
+    assert out.count("'viaje', 'viaje a Roma'") == 2
+    assert "No está claro" in out and "not clear" in out
+    assert "Actualizado" not in out and "Updated" not in out and "stored" not in out
+    assert (tmp_path / "facts.yaml").read_bytes() == antes                # ni un byte cambiado
+    assert _hechos_de(tmp_path) == {"viaje": "en mayo"}
+    assert not recibido.exists()                                          # ningún motor consultado
+
+    out = _sesion_nueva(tmp_path, ["¿cuál es mi viaje?", "¿cuál es mi viaje a Roma?", "salir"], recibido)
+    assert "viaje es en mayo" in out and "No tengo nada guardado" in out
+    assert json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8")) == []
+
+
+def test_cli_frases_sin_intencion_de_memoria_van_al_motor_y_no_tocan_los_hechos(tmp_path):
+    import json
+    (tmp_path / "hist").mkdir()
+    recibido = tmp_path / "recibido.json"
+    _sesion_nueva(tmp_path, ["recuerda que mi coche es rojo", "remember that my car is red", "salir"], recibido)
+    antes = (tmp_path / "facts.yaml").read_bytes()
+    frases = ["mi coche ahora es azul", "my car is now blue", "cambia el fondo a azul"]
+
+    out = _sesion_nueva(tmp_path, frases + ["salir"], recibido)           # proceso nuevo
+    for frase in frases:
+        assert f"respuesta a: {frase}" in out                               # contestó el motor, no la memoria
+    assert "Actualizado" not in out and "Updated" not in out and "Hecho guardado" not in out
+    mensajes = json.loads(recibido.read_text(encoding="utf-8"))
+    assert [m["content"] for m in mensajes if m["role"] == "user"] == frases
+    sistema = "\n".join(m["content"] for m in mensajes if m["role"] == "system")
+    assert "- coche: rojo" in sistema and "- car: red" in sistema          # los hechos intactos llegan al motor
+    assert (tmp_path / "facts.yaml").read_bytes() == antes
+    assert _hechos_de(tmp_path) == {"coche": "rojo", "car": "red"}
+    guardado = json.loads((tmp_path / "hist" / "historial.json").read_text(encoding="utf-8"))
+    assert [m["content"] for m in guardado if m["role"] == "user"] == frases
+
+    out = _sesion_nueva(tmp_path, ["¿cuál es mi coche?", "what is my car?", "salir"], recibido)
+    assert "coche es rojo" in out and "car is red" in out

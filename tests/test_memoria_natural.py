@@ -1682,3 +1682,42 @@ def test_copia_de_seguridad_no_sobreescribe_y_falla_limpiamente(umask_022, _alma
     assert memoria.migrar_perfil_legado() == 0                              # sin copia no se migra nada
     assert _almacen_temporal.perfil.read_bytes() == original
     assert not list(_almacen_temporal.dir.glob("*.bak")) and not os.path.exists(memoria.FACTS_PATH)
+
+
+# =========================================================================== clave completa con UN solo dato, y conversación con hechos
+def test_actualizacion_ambigua_con_solo_viaje_guardado_aclara_sin_escribir(motor_controlado):
+    """Sólo 'viaje' guardado: 'mi viaje a Roma a julio' admite dos lecturas y la guardada es la corta,
+    así que se aclara y no se escribe (ni se crea 'viaje a Roma' ni se cambia 'viaje')."""
+    ai, sel, fake = motor_controlado
+    hist = []
+    assert "Hecho guardado: viaje = en mayo" in ai.ask("recuerda que mi viaje es en mayo", hist)
+    antes = bytes_en_disco()
+    for entrada, pista in (("actualiza en tu memoria mi viaje a Roma a julio", "No está claro"),
+                           ("update the fact viaje a Roma to July", "not clear"),
+                           ("online: actualiza en tu memoria mi viaje a Roma a julio", "No está claro")):
+        r = ai.ask(entrada, hist)
+        assert pista in r and "'viaje'" in r and "'viaje a Roma'" in r, (entrada, r)
+        assert bytes_en_disco() == antes
+    assert hechos_en_disco() == {"viaje": "en mayo"}
+    assert hist == []                                                     # aclaraciones: ni historial...
+    assert all(m.llamadas == [] for m in fake.motores.todos.values())     # ...ni motores
+    assert fake.estado["hosts"] == []
+    assert "en mayo" in ai.ask("¿cuál es mi viaje?", hist)
+
+
+def test_frases_sin_intencion_de_memoria_son_conversacion_aunque_el_dato_exista(motor_controlado):
+    """Con hechos guardados, 'mi coche ahora es azul', 'my car is now blue' y 'cambia el fondo a azul'
+    van al motor como conversación normal y los hechos persistentes no cambian."""
+    ai, sel, fake = motor_controlado
+    hist = []
+    ai.ask("recuerda que mi coche es rojo", hist)
+    ai.ask("remember that my car is red", hist)
+    antes = bytes_en_disco()
+    frases = ["mi coche ahora es azul", "my car is now blue", "cambia el fondo a azul"]
+    for frase in frases:
+        assert ai.ask(frase, hist) == "respuesta de off_a"
+    assert [m["content"] for m in hist if m["role"] == "user"] == frases
+    recibidas = [llamada[0][-1]["content"] for llamada in fake.motores.todos["off_a"].llamadas]
+    assert recibidas == frases
+    assert bytes_en_disco() == antes and hechos_en_disco() == {"coche": "rojo", "car": "red"}
+    assert "coche es rojo" in ai.ask("¿cuál es mi coche?", hist) and "car is red" in ai.ask("what is my car?", hist)
