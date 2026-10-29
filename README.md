@@ -114,7 +114,18 @@ The same guide is
 available by typing `ayuda`, `cómo funcionas` or `explícame cómo funcionas`
 in the window or console, even without any available engine.
 The dark theme includes rounded buttons and a rounded,
-resizable input field with a focus indicator. It uses the same `ask()` as the console, so memory
+resizable input field with a focus indicator. A small blue sphere above the
+input pulses while a request is processed and while its answer is read aloud,
+with separate preparing/speaking labels. Its pulse is decorative, not an audio
+waveform or measured progress.
+**Voice system: in progress (experimental, not complete).**
+The **Voz: OFF / Voz: ON** button toggles optional local Spanish speech, off at
+startup. It uses the installed eSpeak NG shared library (Linux package
+`espeak-ng`), with a slower, lower-pitched synthetic voice, not a film voice clone.
+No online TTS, model downloads or persistent audio files are used. Mute, a new
+message or closing the window stops playback. Missing libraries and audio
+errors are shown in the chat; an available audio device is required.
+It uses the same `ask()` as the console, so memory
 requests, mode commands, offline guarantees and history behave identically; the
 *Online* button is the same explicit authorization as typing *"pasa a modo
 online"*. Messages are processed in a worker thread (the window never freezes),
@@ -258,6 +269,7 @@ core/
 ├── assistant.py         # Main CLI
 ├── ui_controlador.py    # Phase 8: window controller (no Tk): send, state, clear, save, worker thread
 ├── ui_tk.py             # Phase 8: tkinter chat window on top of the controller
+├── voz.py               # Optional local eSpeak NG speech in a cancelable process
 ├── memory_engine.py     # Fact store (atomic, validated) + history + memory context
 ├── memory_commands.py   # Phase 7: natural-language memory requests (local, deterministic)
 ├── offline_engine.py    # Compatibility facade: force offline motors

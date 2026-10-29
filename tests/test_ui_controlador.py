@@ -340,3 +340,113 @@ def test_entrada_redondeada_se_adapta_y_conserva_el_texto(ventana_tk):
     assert str(v.entrada.cget("state")) == "disabled"
     v._bloquear(False)
     assert str(v.entrada.cget("state")) == "normal"
+
+
+@pytest.mark.parametrize("fallo", [False, True])
+def test_esfera_anima_durante_respuesta_y_para_al_terminar(ventana_tk, fallo):
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+
+    def preguntar(texto, historial):
+        entra.set()
+        assert sale.wait(5)
+        if fallo:
+            raise RuntimeError("error de prueba")
+        return "respuesta animada"
+
+    v.controlador._preguntar = preguntar
+    esfera = v.esfera
+    assert esfera._temporizador is None
+    v.enviar("hola")
+    try:
+        assert entra.wait(5)
+        assert esfera._temporizador is not None
+        antes = esfera.coords(esfera._bola)
+        _esperar(v, lambda: esfera.coords(esfera._bola) != antes)
+        assert "preparando respuesta" in esfera.itemcget(esfera._etiqueta, "text")
+    finally:
+        sale.set()
+    esperado = "Error interno: error de prueba" if fallo else "respuesta animada"
+    _esperar(v, lambda: esperado in _chat(v))
+    assert esfera._temporizador is None
+    assert esfera.itemcget(esfera._etiqueta, "text") == "B.A.I en reposo"
+    assert esfera.coords(esfera._bola) == [12, 12, 32, 32]
+
+
+def test_esfera_cancela_animacion_al_destruir(ventana_tk):
+    esfera = ventana_tk.esfera
+    esfera.activar(True)
+    identificador = esfera._temporizador
+    esfera.destroy()
+    assert esfera._temporizador is None
+    assert identificador not in ventana_tk.raiz.tk.call("after", "info")
+
+
+@pytest.fixture
+def voz_fake(ventana_tk):
+    class Voz:
+        disponible = True
+        activo = False
+        error = None
+        textos = []
+
+        def hablar(self, texto):
+            self.textos.append(texto)
+            self.activo = True
+
+        def comprobar(self):
+            return self.activo, self.error
+
+        def detener(self):
+            self.activo = False
+
+    voz = Voz()
+    ventana_tk._voz = voz
+    return voz
+
+
+def test_voz_opcional_anima_hasta_fin_audio_y_se_puede_silenciar(ventana_tk, voz_fake):
+    v = ventana_tk
+    v.enviar("hola")
+    _esperar(v, lambda: "respuesta de off_a" in _chat(v))
+    assert voz_fake.textos == []
+    v._alternar_voz()
+    v.enviar("ayuda")
+    _esperar(v, lambda: v._hablando)
+    assert voz_fake.textos and voz_fake.activo
+    assert v.esfera.itemcget(v.esfera._etiqueta, "text") == "B.A.I hablando…"
+    voz_fake.activo = False
+    _esperar(v, lambda: not v._hablando)
+    assert v.esfera._temporizador is None
+    v.enviar("estado")
+    _esperar(v, lambda: v._hablando)
+    v._alternar_voz()
+    assert not voz_fake.activo and not v._voz_activada
+    assert v.esfera._temporizador is None
+
+
+def test_voz_se_corta_con_nuevo_mensaje_y_al_cerrar(ventana_tk, voz_fake):
+    v = ventana_tk
+    v._alternar_voz()
+    v.enviar("ayuda")
+    _esperar(v, lambda: v._hablando)
+    v.enviar("estado")
+    assert not voz_fake.activo
+    _esperar(v, lambda: v._hablando)
+    v.cerrar()
+    assert not voz_fake.activo
+
+
+def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
+    v = ventana_tk
+    voz_fake.disponible = False
+    v._alternar_voz()
+    assert "Instala eSpeak NG" in _chat(v) and not v._voz_activada
+    voz_fake.disponible = True
+    v._alternar_voz()
+    v.enviar("ayuda")
+    _esperar(v, lambda: v._hablando)
+    voz_fake.error = "No se ha podido reproducir la voz: sin altavoz"
+    voz_fake.activo = False
+    _esperar(v, lambda: "sin altavoz" in _chat(v))
+    assert not v._hablando and v.esfera._temporizador is None

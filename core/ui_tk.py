@@ -4,6 +4,7 @@ barra de estado y botones de modo. Toda la lógica vive en ControladorChat; aqu�
 sólo se dibuja. Los mensajes se procesan en un hilo para no congelar la ventana
 y el resultado vuelve al hilo de Tk por una cola, nunca llamando a Tk desde el hilo.
 """
+import math
 import queue
 import tkinter as tk
 from tkinter import font as tkfont
@@ -12,6 +13,7 @@ from tkinter import ttk
 from core.config import nombre_ia, master_name
 from core.ayuda import DESCRIPCION_BAI
 from core.ui_controlador import ControladorChat
+from core.voz import VozLocal
 
 INTERVALO_COLA_MS = 100
 ANCHO_BARRA_ESTRECHA = 640
@@ -79,15 +81,66 @@ class BotonRedondo(tk.Canvas):
         return self._estado if clave == "state" else super().cget(clave)
 
 
+class EsferaActividad(tk.Canvas):
+    """Indicador local de actividad; no representa audio ni progreso del motor."""
+
+    INTERVALO_MS = 40
+
+    def __init__(self, padre):
+        super().__init__(padre, width=220, height=44, bg=COLORES["fondo"],
+                         highlightthickness=0, borderwidth=0, takefocus=0)
+        self._temporizador = None
+        self._fase = 0
+        self._halo = self.create_oval(5, 5, 39, 39, fill="#233746", outline="")
+        self._bola = self.create_oval(12, 12, 32, 32, fill=COLORES["acento"], outline="")
+        self.create_oval(16, 15, 21, 20, fill=COLORES["acento_texto"], outline="")
+        self._etiqueta = self.create_text(
+            52, 22, text="B.A.I en reposo", anchor="w", fill=COLORES["texto_suave"], font=FUENTE_UI)
+        self.bind("<Destroy>", self._al_destruir)
+
+    def activar(self, activo, hablando=False):
+        if self._temporizador is not None:
+            self.after_cancel(self._temporizador)
+            self._temporizador = None
+        self._fase = 0
+        texto = "B.A.I hablando…" if hablando else "B.A.I preparando respuesta…"
+        self.itemconfigure(self._etiqueta, text=texto if activo else "B.A.I en reposo")
+        if activo:
+            self._animar()
+        else:
+            self.coords(self._halo, 5, 5, 39, 39)
+            self.coords(self._bola, 12, 12, 32, 32)
+            self.itemconfigure(self._bola, fill=COLORES["acento"])
+
+    def _animar(self):
+        self._fase += 0.22
+        pulso = (math.sin(self._fase) + 1) / 2
+        radio = 9 + 3 * pulso
+        halo = 15 + 5 * pulso
+        self.coords(self._bola, 22 - radio, 22 - radio, 22 + radio, 22 + radio)
+        self.coords(self._halo, 22 - halo, 22 - halo, 22 + halo, 22 + halo)
+        self.itemconfigure(self._bola, fill=COLORES["acento_texto"])
+        self._temporizador = self.after(self.INTERVALO_MS, self._animar)
+
+    def _al_destruir(self, evento):
+        if evento.widget is self and self._temporizador is not None:
+            self.after_cancel(self._temporizador)
+            self._temporizador = None
+
+
 class VentanaBai:
-    def __init__(self, controlador=None, raiz=None):
+    def __init__(self, controlador=None, raiz=None, voz=None):
         self.controlador = controlador or ControladorChat()
         self.raiz = raiz or tk.Tk()
         self._cola = queue.Queue()
+        self._voz = voz if voz is not None else VozLocal()
+        self._voz_activada = False
+        self._hablando = False
         self._construir()
         self._mostrar(nombre_ia, f"Hola, {master_name}. Memoria de sesión cargada.")
         self.raiz.protocol("WM_DELETE_WINDOW", self.cerrar)
-        self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
+        self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
+        self.raiz.bind("<Destroy>", self._al_destruir, add="+")
 
     def _construir(self):
         self.raiz.title(f"{nombre_ia} — asistente")
@@ -120,11 +173,15 @@ class VentanaBai:
         pie = tk.Frame(self.raiz, bg=COLORES["fondo"], padx=10, pady=10)
         pie.pack(side="bottom", fill="x")
         pie.columnconfigure(0, weight=1)
+        self.esfera = EsferaActividad(pie)
+        self.esfera.grid(row=0, column=0, sticky="w")
+        self.boton_voz = self._boton(pie, "Voz: OFF", self._alternar_voz, COLORES["boton"])
+        self.boton_voz.grid(row=0, column=1, padx=(8, 0), pady=(0, 4))
         alto_entrada = tkfont.Font(font=FUENTE_UI).metrics("linespace") + 16
         self.marco_entrada = tk.Canvas(
             pie, bg=COLORES["fondo"], width=100, height=alto_entrada,
             highlightthickness=0, borderwidth=0, takefocus=0)
-        self.marco_entrada.grid(row=0, column=0, sticky="ew")
+        self.marco_entrada.grid(row=1, column=0, sticky="ew")
         self._borde_entrada = _rect_redondeado(
             self.marco_entrada, 2, 2, 98, alto_entrada - 2, 10,
             fill=COLORES["entrada"], outline=COLORES["borde"])
@@ -143,7 +200,7 @@ class VentanaBai:
             self._borde_entrada, outline=COLORES["borde"]))
         self.entrada.bind("<Return>", lambda _e: self.enviar())
         self.boton_enviar = self._boton(pie, "Enviar", self.enviar, COLORES["acento"])
-        self.boton_enviar.grid(row=0, column=1, padx=(8, 0), sticky="ns")
+        self.boton_enviar.grid(row=1, column=1, padx=(8, 0), sticky="ns")
 
         centro = tk.Frame(self.raiz, bg=COLORES["fondo"])
         centro.pack(fill="both", expand=True)
@@ -210,13 +267,44 @@ class VentanaBai:
         if texto.lower() in ("salir", "exit", "quit", "irten", "atera", "amaitu"):
             self.cerrar()
             return
+        self._detener_voz()
         self._mostrar(master_name, texto)
         self._bloquear(True)
         self.controlador.enviar_en_hilo(texto, self._cola.put)
 
     def cerrar(self):
+        self._detener_voz()
+        self.esfera.activar(False)
         self.controlador.cerrar()
         self.raiz.destroy()
+
+    def _al_destruir(self, evento):
+        if evento.widget is self.raiz:
+            self._voz.detener()
+            self.raiz.after_cancel(self._temporizador_cola)
+
+    def _alternar_voz(self):
+        if not self._voz_activada and not self._voz.disponible:
+            self._mostrar("aviso", "Voz local no disponible. Instala eSpeak NG para activarla.", "aviso")
+            return
+        self._voz_activada = not self._voz_activada
+        self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: ON" if self._voz_activada else "Voz: OFF")
+        if not self._voz_activada:
+            self._detener_voz()
+            self.esfera.activar(self.controlador.ocupado)
+
+    def _detener_voz(self):
+        self._voz.detener()
+        self._hablando = False
+
+    def _leer(self, texto):
+        try:
+            self._voz.hablar(texto)
+        except (OSError, RuntimeError) as error:
+            self._mostrar("aviso", f"No se ha podido iniciar la voz: {error}", "aviso")
+            return
+        self._hablando = True
+        self.esfera.activar(True, hablando=True)
 
     def ejecutar(self):
         self.raiz.mainloop()
@@ -228,7 +316,14 @@ class VentanaBai:
                 self._pintar_turno(self._cola.get_nowait())
         except queue.Empty:
             pass
-        self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
+        if self._hablando:
+            activo, error = self._voz.comprobar()
+            if not activo:
+                self._hablando = False
+                self.esfera.activar(self.controlador.ocupado)
+                if error:
+                    self._mostrar("aviso", error, "aviso")
+        self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
 
     def _pintar_turno(self, turno):
         if turno.limpiado:
@@ -239,6 +334,8 @@ class VentanaBai:
         if not turno.guardado:
             self._mostrar("aviso", "No he podido guardar el historial en disco; revisa la consola.", "aviso")
         self._bloquear(False)
+        if self._voz_activada:
+            self._leer(turno.texto)
 
     def _mostrar(self, autor, texto, etiqueta=None):
         self.chat.configure(state="normal")
@@ -253,6 +350,7 @@ class VentanaBai:
         self.chat.configure(state="disabled")
 
     def _bloquear(self, ocupado):
+        self.esfera.activar(ocupado)
         estado = "disabled" if ocupado else "normal"
         self.boton_enviar.configure(state=estado)
         self.entrada.configure(state=estado)

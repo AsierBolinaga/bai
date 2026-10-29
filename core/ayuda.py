@@ -63,6 +63,16 @@ turno o al cerrar. No equivale a borrar todos los archivos de historial.
 Proceso un mensaje a la vez; puedes redimensionar la ventana y desplazarte
 por el chat. Escribe 'salir' o cierra la ventana para terminar.
 
+VOZ LOCAL (VENTANA, EN DESARROLLO)
+El sistema de voz es experimental y aún no se considera terminado.
+El botón 'Voz: OFF' activa la lectura de las siguientes respuestas en español.
+'Voz: ON' la silencia y corta el audio. También se detiene al enviar un mensaje
+nuevo o cerrar. Está desactivada al abrir; requiere la biblioteca eSpeak NG
+instalada y una salida de audio disponible. No usa servicios online ni descarga
+modelos. Es una voz sintética propia, no la voz de JARVIS de las películas.
+La esfera indica cuándo preparo la respuesta y cuándo la estoy leyendo;
+su pulso es decorativo, no sigue la amplitud del sonido.
+
 AYUDA
 Pulsa Ayuda o escribe 'ayuda', 'cómo funcionas' o 'explícame cómo funcionas'.
 Esta guía y las consultas de estado no requieren un modelo ni acceso online."""
