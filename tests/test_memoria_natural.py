@@ -1589,15 +1589,96 @@ def test_marcador_desconocido_entre_procesos_lo_olvidado_no_vuelve(tmp_path, cla
     assert all(any(m.endswith(e) for m in datos["perfil_migrado"]) for e in esperados)
 
 
-# =========================================================================== la escritura atómica conserva permisos
-def test_escritura_atomica_conserva_los_permisos_del_fichero(_almacen_temporal):
-    import stat
-    _almacen_temporal.perfil.chmod(0o640)
+# =========================================================================== permisos de los datos personales
+import stat
+
+
+def _modo(ruta):
+    return stat.S_IMODE(os.stat(ruta).st_mode)
+
+
+@pytest.fixture
+def umask_022():
+    anterior = os.umask(0o022)
+    yield
+    os.umask(anterior)
+
+
+def test_ficheros_nuevos_de_datos_personales_nacen_0600(umask_022, _almacen_temporal, monkeypatch, tmp_path):
+    """Todas las rutas de creación bajo umask 022: hechos, copia del perfil, historial,
+    rescate y manifiesto nacen 0600; el proceso no cambia su umask."""
+    historial = tmp_path / "h"
+    historial.mkdir()
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(historial))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(historial / "historial.json"))
     escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"gato": "Mishi"}})
-    _almacen_temporal.perfil.chmod(0o640)
-    memoria.migrar_perfil_legado()                     # reescribe el perfil (vaciado) y crea facts.yaml
-    assert stat.S_IMODE(_almacen_temporal.perfil.stat().st_mode) == 0o640          # se conserva
-    umask = os.umask(0); os.umask(umask)
-    assert stat.S_IMODE(_almacen_temporal.hechos.stat().st_mode) == (0o666 & ~umask)   # nuevo: según umask
+    _almacen_temporal.perfil.chmod(0o644)
+    procesar_comando_memoria("recuerda que mi coche es rojo")            # facts.yaml nuevo + migración
+    assert _modo(memoria.FACTS_PATH) == 0o600
+    copia = next(_almacen_temporal.dir.glob("user_profile.yaml.legado-*.bak"))
+    assert _modo(copia) == 0o600                                           # copia de seguridad privada
+    assert _modo(memoria.MEMORY_PATH) == 0o644                             # el perfil reescrito conserva sus permisos
+    assert memoria.load_full_history() == []
+    assert _modo(memoria.SESSION_FILE) == 0o600                            # historial nuevo
+    # historial dañado e inamovible + borrado imposible: rescate y manifiesto
+    (historial / "historial.json").write_text("[{roto", encoding="utf-8")
+    real_replace, real_remove = os.replace, os.remove
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("simulado"))
+                   if str(a) == memoria.SESSION_FILE else real_replace(a, b))
+        memoria._HISTORIAL_PROTEGIDO.clear()
+        memoria.load_full_history()
+        memoria.save_chat_history([{"role": "user", "content": "a"}])
+        mp.setattr(os, "remove", lambda q: (_ for _ in ()).throw(OSError("simulado")))
+        memoria._HISTORIAL_PROTEGIDO.clear()
+        memoria.load_full_history()
+    rescates = sorted(historial.glob("historial-rescate-*.json"))
+    assert rescates and all(_modo(r) == 0o600 for r in rescates)
+    manifiestos = list(historial.glob("*.absorbidos"))
+    assert manifiestos and all(_modo(m) == 0o600 for m in manifiestos)
+    assert os.umask(0o022) == 0o022                                        # el umask del proceso no se ha tocado
+
+
+@pytest.mark.parametrize("modo", [0o640, 0o644, 0o600, 0o400])
+def test_los_permisos_existentes_se_conservan_sin_ampliarlos(umask_022, _almacen_temporal, modo):
     procesar_comando_memoria("recuerda que mi coche es rojo")
-    assert stat.S_IMODE(_almacen_temporal.hechos.stat().st_mode) == (0o666 & ~umask)
+    os.chmod(memoria.FACTS_PATH, modo)
+    procesar_comando_memoria("recuerda que mi gato se llama Mishi")       # reescritura atómica
+    assert _modo(memoria.FACTS_PATH) == modo
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"perro": "Rex"}})
+    _almacen_temporal.perfil.chmod(modo)
+    memoria.migrar_perfil_legado()                                          # el perfil se vacía y se reescribe
+    assert _modo(memoria.MEMORY_PATH) == modo
+
+
+def test_si_no_se_pueden_determinar_los_permisos_se_usa_0600(umask_022, _almacen_temporal, monkeypatch):
+    procesar_comando_memoria("recuerda que mi coche es rojo")
+    os.chmod(memoria.FACTS_PATH, 0o644)
+    real_stat = os.stat
+
+    def stat_falla(ruta, *a, **kw):
+        if str(ruta) == memoria.FACTS_PATH:
+            raise PermissionError("stat denegado (simulado)")
+        return real_stat(ruta, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", stat_falla)
+    procesar_comando_memoria("recuerda que mi gato se llama Mishi")
+    monkeypatch.setattr(os, "stat", real_stat)
+    assert _modo(memoria.FACTS_PATH) == 0o600
+    assert hechos_en_disco() == {"coche": "rojo", "gato": "Mishi"}
+
+
+def test_copia_de_seguridad_no_sobreescribe_y_falla_limpiamente(umask_022, _almacen_temporal, monkeypatch):
+    escribir_perfil(_almacen_temporal, {"aprendido_durante_sesion": {"gato": "Mishi"}})
+    original = _almacen_temporal.perfil.read_bytes()
+    real_open = os.open
+
+    def open_falla(ruta, *a, **kw):
+        if str(ruta).endswith(".bak"):
+            raise PermissionError("sin permiso (simulado)")
+        return real_open(ruta, *a, **kw)
+
+    monkeypatch.setattr(os, "open", open_falla)
+    assert memoria.migrar_perfil_legado() == 0                              # sin copia no se migra nada
+    assert _almacen_temporal.perfil.read_bytes() == original
+    assert not list(_almacen_temporal.dir.glob("*.bak")) and not os.path.exists(memoria.FACTS_PATH)

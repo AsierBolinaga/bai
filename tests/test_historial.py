@@ -423,3 +423,24 @@ def test_manifiesto_en_cadena_con_borrados_parciales(historial):
             assert [m["content"] for m in _cargar_como_proceso_nuevo()] == ["a", "b"]
     manifiesto = json.loads((historial / "historial.json.absorbidos").read_text())
     assert sorted(manifiesto) == ["historial-rescate-1.json", "historial-rescate-3.json"]
+
+
+def test_historial_existente_pero_sin_stat_no_se_trata_como_ausente(historial, monkeypatch, capsys):
+    """Si os.stat falla (p. ej. permisos del directorio) el fichero existe igualmente:
+    se protege y nunca se sobreescribe."""
+    fichero = historial / "historial.json"
+    fichero.write_text(json.dumps([{"role": "user", "content": "valioso"}]), encoding="utf-8")
+    real_open = open
+
+    def abrir(ruta, *a, **kw):
+        if str(ruta) == str(fichero) and (not a or "r" in a[0]):
+            raise PermissionError("permiso denegado (simulado)")
+        return real_open(ruta, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", abrir)
+    monkeypatch.setattr(os.path, "exists", lambda p: False if str(p) == str(fichero) else os.path.lexists(p))
+    assert _cargar_como_proceso_nuevo() == []
+    assert memoria.save_chat_history([{"role": "user", "content": "nuevo"}]) is True
+    monkeypatch.setattr("builtins.open", real_open)
+    assert json.loads(fichero.read_text(encoding="utf-8")) == [{"role": "user", "content": "valioso"}]
+    assert list(historial.glob("historial-rescate-*.json"))

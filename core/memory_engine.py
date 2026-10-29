@@ -174,14 +174,14 @@ def _validar_hechos(datos):
 
 def _leer_almacen():
     """Lee y valida FACTS_PATH sin efectos secundarios."""
-    if not os.path.exists(FACTS_PATH):
-        return {"hechos": {}, "perfil_migrado": set()}
     try:
         with open(FACTS_PATH, "r", encoding="utf-8") as f:
             datos = yaml.safe_load(f)
+    except FileNotFoundError:
+        return {"hechos": {}, "perfil_migrado": set()}
     except (yaml.YAMLError, UnicodeDecodeError) as e:
         raise MemoriaHechosInvalida(f"YAML ilegible: {e}") from e
-    except OSError as e:
+    except OSError as e:          # existe pero no se puede leer: nunca se trata como vacío
         raise ErrorLecturaMemoria(str(e)) from e
     return _validar_almacen(datos)
 
@@ -198,24 +198,29 @@ def cargar_hechos():
     return _leer_hechos()
 
 
+_MODO_PRIVADO = 0o600   # datos personales: sólo el usuario (sin tocar el umask del proceso)
+
+
+def _modo_para(ruta):
+    """Permisos con los que debe quedar `ruta` tras escribirla: los que ya tenía
+    (nunca se amplían) o 0600 si es nueva o no se pueden determinar."""
+    try:
+        return stat.S_IMODE(os.stat(ruta).st_mode) & 0o777
+    except OSError:
+        return _MODO_PRIVADO
+
+
 def _escribir_atomico(ruta, contenido, prefijo):
     """Escribe `contenido` en `ruta` vía fichero temporal + os.replace.
-    Lanza OSError si falla; el fichero anterior queda intacto."""
+    Lanza OSError si falla; el fichero anterior queda intacto. El temporal nace
+    0600 (mkstemp) y se deja con los permisos previos del fichero, o 0600 si es nuevo."""
     directorio = os.path.dirname(ruta) or "."
     os.makedirs(directorio, exist_ok=True)
     fd, temporal = tempfile.mkstemp(dir=directorio, prefix=prefijo, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(contenido)
-        # mkstemp crea el temporal como 0600: se conservan los permisos del fichero
-        # que se reemplaza (o los habituales según umask si es nuevo).
-        try:
-            modo = stat.S_IMODE(os.stat(ruta).st_mode)
-        except FileNotFoundError:
-            umask = os.umask(0)
-            os.umask(umask)
-            modo = 0o666 & ~umask
-        os.chmod(temporal, modo)
+        os.chmod(temporal, _modo_para(ruta))
         os.replace(temporal, ruta)
     except BaseException:
         try:
@@ -348,12 +353,12 @@ def _clasificar_hojas(texto, perfil, hojas, marcadores, hechos):
 
 def _leer_perfil_texto():
     """(texto, dict) del perfil heredado, o (None, None) si no existe / no es legible / no es un dict."""
-    if not os.path.exists(MEMORY_PATH):
-        return None, None
     try:
         with open(MEMORY_PATH, "r", encoding="utf-8") as f:
             texto = f.read()
         perfil = yaml.safe_load(texto)
+    except FileNotFoundError:
+        return None, None
     except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
         _avisar_una_vez(("perfil-ilegible", MEMORY_PATH),
                         f"[B.A.I] Aviso: no puedo leer el perfil heredado ({e}); lo dejo como está.")
@@ -547,8 +552,22 @@ def _respaldar_perfil(texto):
     except OSError:
         pass
     respaldo = MEMORY_PATH + _SUFIJO_RESPALDO.format(ts=datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
-    shutil.copyfile(MEMORY_PATH, respaldo)
+    _copiar_privado(MEMORY_PATH, respaldo)
     return respaldo
+
+
+def _copiar_privado(origen, destino):
+    """Copia de seguridad creada como 0600 desde el principio (sin pasar por el umask)."""
+    fd = os.open(destino, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _MODO_PRIVADO)
+    try:
+        with open(origen, "rb") as f, os.fdopen(fd, "wb") as g:
+            shutil.copyfileobj(f, g)
+    except BaseException:
+        try:
+            os.unlink(destino)
+        except OSError:
+            pass
+        raise
 
 
 def _vaciar_perfil_con_respaldo(texto, solo_si_hace_falta=False):
@@ -754,11 +773,11 @@ _SUFIJO_MANIFIESTO = ".absorbidos"   # no termina en .json: nunca se carga como 
 def _leer_manifiesto(destino):
     """{nombre_fichero: sha256} de lo que `destino` ya contiene. {} si no hay o es ilegible."""
     ruta = destino + _SUFIJO_MANIFIESTO
-    if not os.path.exists(ruta):
-        return {}
     try:
         with open(ruta, "r", encoding="utf-8") as f:
             datos = json.load(f)
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError) as e:
         print(f"[B.A.I] Aviso: no puedo leer {ruta} ({e}); lo ignoro.")
         return {}
@@ -785,15 +804,16 @@ def load_full_history():
 
     absorbidos = {}   # nombre -> huella de lo que algún destino leído ya contiene
     # Cargar historial activo si existe
-    if os.path.exists(SESSION_FILE):
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as f:
-                messages.extend(_turnos_validos(json.load(f)))
-            absorbidos.update(_leer_manifiesto(SESSION_FILE))   # sólo si el principal se ha podido leer
-        except (ValueError, UnicodeDecodeError) as e:       # JSON roto o estructura inesperada
-            _apartar_corrupto(SESSION_FILE, e)                # si no se puede apartar, queda protegido
-        except OSError as e:                                  # no se puede leer: no se toca
-            _proteger_historial(f"no puedo leer el historial ({e})")
+    try:
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            messages.extend(_turnos_validos(json.load(f)))
+        absorbidos.update(_leer_manifiesto(SESSION_FILE))       # sólo si el principal se ha podido leer
+    except FileNotFoundError:
+        pass
+    except (ValueError, UnicodeDecodeError) as e:           # JSON roto o estructura inesperada
+        _apartar_corrupto(SESSION_FILE, e)                    # si no se puede apartar, queda protegido
+    except OSError as e:                                      # existe pero no se puede leer: no se toca
+        _proteger_historial(f"no puedo leer el historial ({e})")
 
     # Leer sesiones anteriores y de rescate (los ficheros ilegibles se conservan sin tocar)
     leidos = []   # (ruta, nombre, huella, turnos)
