@@ -1131,11 +1131,15 @@ def test_cli_clave_completa_y_aclaraciones_sin_motor(memoria_temporal, selector_
 import hashlib
 
 
-def _almacen_marcado(almacen, marcador, hechos=None, clave="perfil_migrado"):
-    """Escribe un almacén como el de una versión anterior: hechos + marcador de migración."""
+_SIN_MARCADOR = object()
+
+
+def _almacen_marcado(almacen, marcador=_SIN_MARCADOR, hechos=None, clave="perfil_migrado"):
+    """Escribe un almacén como el de una versión anterior: hechos + marcador de migración
+    (None escribe la clave con valor nulo; _SIN_MARCADOR la omite)."""
     datos = {"version": 1, "hechos": hechos if hechos is not None else
              {"gato": {"clave": "gato", "valor": "Mishi", "origen": "user_profile.yaml"}}}
-    if marcador is not None:
+    if marcador is not _SIN_MARCADOR:
         datos[clave] = marcador
     almacen.hechos.write_text(yaml.safe_dump(datos, allow_unicode=True), encoding="utf-8")
 
@@ -1153,7 +1157,7 @@ def _marcadores_compatibles():
     return [
         ("lista de huellas del perfil completo", [sha]),
         ("una sola huella", sha),
-        ("diccionario con huella y fecha", {"sha256": sha, "fecha": "2025-01-01"}),
+        ("diccionario con huella", {"sha256": sha}),
         ("huella del volcado canónico", [hashlib.sha256(yaml.safe_dump(PERFIL_VIEJO, sort_keys=True).encode()).hexdigest()]),
         ("md5 del perfil", [hashlib.md5(texto.encode()).hexdigest()]),
         ("huellas por hoja (formato actual)", [memoria._huella(["aprendido_durante_sesion", "furgoneta"], "una camper"),
@@ -1260,10 +1264,28 @@ def test_marcador_no_reconocido_y_olvido_posterior_no_resucita(_almacen_temporal
     assert "gato" in _almacen_temporal.perfil.read_text()   # el perfil sigue intacto, pendiente
 
 
-def test_marcador_diccionario_ignora_metadatos(_almacen_temporal):
+def test_marcador_diccionario_conserva_valores_desconocidos_como_incertidumbre(_almacen_temporal):
     sha = hashlib.sha256(_texto_perfil().encode()).hexdigest()
     _almacen_marcado(_almacen_temporal, {"sha256": sha, "fecha": "2025-01-01", "version": "0.9"})
-    assert memoria.huellas_migradas() == {sha}
+    assert memoria.huellas_migradas() == {sha, "2025-01-01", "0.9"}          # nada se descarta
+
+
+def test_marcador_diccionario_mixto_certeza_para_este_perfil_y_prudencia_despues(_almacen_temporal):
+    """Una huella reconocida da certeza sobre ESTE perfil; los valores desconocidos del
+    diccionario se conservan y, en adelante, mantienen la prudencia (pendiente) para lo nuevo."""
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    sha = hashlib.sha256(_texto_perfil().encode()).hexdigest()
+    _almacen_marcado(_almacen_temporal, {"sha256": sha, "fecha": "2025-01-01"})
+    assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+    assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+    assert "camper" not in memoria.get_memory_context()
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}   # migrado con certeza
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    assert "2025-01-01" in datos["perfil_migrado"] and sha not in datos["perfil_migrado"]
+    # lo que se añada después al perfil queda pendiente: no se puede distinguir de algo olvidado
+    _almacen_temporal.perfil.write_text(_texto_perfil({"aprendido_durante_sesion": {"perro": "Rex"}}), encoding="utf-8")
+    assert memoria.migrar_perfil_legado() == 0 and hechos_en_disco() == {"gato": "Mishi"}
+    assert "Rex" not in memoria.get_memory_context()
 
 
 def test_almacen_marcado_y_perfil_con_datos_nuevos_por_hoja(_almacen_temporal):
@@ -1473,3 +1495,95 @@ def test_alias_legado_con_huella_mal_formada_queda_pendiente(_almacen_temporal):
     _almacen_marcado(_almacen_temporal, ["no-hex"], clave="legado_migrado")
     assert memoria.migrar_perfil_legado() == 0
     assert hechos_en_disco() == {"gato": "Mishi"} and "camper" not in memoria.get_memory_context()
+
+
+# =========================================================================== diccionarios de marcadores: contenido desconocido
+def _sha_perfil():
+    return hashlib.sha256(_texto_perfil().encode()).hexdigest()
+
+
+CASOS_DICCIONARIO_INCIERTO = [
+    ("cadenas desconocidas", {"version": "0.9", "nota": "migrado"}),
+    ("lista desconocida", {"huellas": ["x", "y"]}),
+    ("mezcla de propio mal formado y desconocido", {"a": "hoja:no-hex", "b": ["perfil:0123"]}),
+    ("vacío", {}),
+    ("nulo", None),
+    ("lista vacía", []),
+    ("cadena vacía", ""),
+    ("lista con cadena desconocida", ["lo-que-sea"]),
+]
+
+
+@pytest.mark.parametrize("clave", ["perfil_migrado", "legado_migrado"])
+@pytest.mark.parametrize("descripcion,marcador", CASOS_DICCIONARIO_INCIERTO, ids=lambda x: x if isinstance(x, str) else "")
+def test_contenido_desconocido_del_marcador_mantiene_la_incertidumbre(_almacen_temporal, clave, descripcion, marcador, capsys):
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    _almacen_marcado(_almacen_temporal, marcador, clave=clave)
+    antes = (_almacen_temporal.perfil.read_bytes(), _almacen_temporal.hechos.read_bytes())
+    assert memoria.huellas_migradas()                                          # nunca un conjunto vacío
+    for _ in range(2):
+        assert "gato es Mishi" in procesar_comando_memoria("¿cuál es mi gato?")
+        assert "No tengo nada guardado" in procesar_comando_memoria("¿cuál es mi furgoneta?")
+        assert "camper" not in memoria.get_memory_context()
+    assert hechos_en_disco() == {"gato": "Mishi"}                             # nada importado
+    assert (_almacen_temporal.perfil.read_bytes(), _almacen_temporal.hechos.read_bytes()) == antes   # sin modificar
+    assert capsys.readouterr().out.count("pendientes de conciliar") == 1
+
+
+@pytest.mark.parametrize("clave", ["perfil_migrado", "legado_migrado"])
+def test_diccionario_con_huella_reconocida_y_valores_desconocidos(_almacen_temporal, clave):
+    """Mezcla: la huella que identifica ESTE perfil da certeza; lo desconocido se conserva."""
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    marcador = {"sha": _sha_perfil(), "otros": ["x", "y"], "nota": "v0.9"}
+    if clave == "legado_migrado":   # el alias etiqueta los valores sin ':' como 'hoja:' -> la huella del perfil
+        marcador["sha"] = "perfil:" + _sha_perfil()   # completo sólo se reconoce con su etiqueta propia
+    _almacen_marcado(_almacen_temporal, marcador, clave=clave)
+    assert memoria.migrar_perfil_legado() == 0
+    assert hechos_en_disco() == {"gato": "Mishi"}
+    assert yaml.safe_load(_almacen_temporal.perfil.read_text()) == {"aprendido_durante_sesion": {}}
+    datos = yaml.safe_load(_almacen_temporal.hechos.read_text(encoding="utf-8"))
+    conservados = {"x", "y"} if clave == "perfil_migrado" else {"hoja:x", "hoja:y"}   # el alias etiqueta lo que no lleva ':'
+    assert conservados <= set(datos["perfil_migrado"]) and "legado_migrado" not in datos
+    assert "camper" not in memoria.get_memory_context()
+
+
+@pytest.mark.parametrize("clave", ["perfil_migrado", "legado_migrado"])
+@pytest.mark.parametrize("contenido", [
+    "{a: 1}", "{a: [1, 2]}", "{a: {b: c}}", "{a: null}", "{a: true}", "[a, 1]", "7", "true",
+])
+def test_formas_invalidas_del_marcador_rechazan_el_esquema_sin_tocar_nada(_almacen_temporal, clave, contenido):
+    _almacen_temporal.perfil.write_text(_texto_perfil(), encoding="utf-8")
+    _almacen_temporal.hechos.write_text(
+        f"version: 1\nhechos: {{gato: {{clave: gato, valor: Mishi}}}}\n{clave}: {contenido}\n", encoding="utf-8")
+    antes = (_almacen_temporal.perfil.read_bytes(), _almacen_temporal.hechos.read_bytes())
+    with pytest.raises(memoria.MemoriaHechosInvalida, match="migrado"):
+        memoria.cargar_hechos()
+    r = procesar_comando_memoria("¿cuál es mi furgoneta?")
+    assert "dañado" in r
+    assert "Hecho guardado" not in procesar_comando_memoria("recuerda que mi coche es rojo")
+    assert (_almacen_temporal.perfil.read_bytes(), _almacen_temporal.hechos.read_bytes()) == antes
+
+
+@pytest.mark.parametrize("clave", ["perfil_migrado", "legado_migrado"])
+@pytest.mark.parametrize("marcador", [{"version": "0.9", "nota": "migrado"}, {"huellas": ["x", "y"]}, {}, None])
+def test_marcador_desconocido_entre_procesos_lo_olvidado_no_vuelve(tmp_path, clave, marcador):
+    perfil = tmp_path / "perfil.yaml"
+    perfil.write_text(_texto_perfil(), encoding="utf-8")
+    original = perfil.read_bytes()
+    (tmp_path / "facts.yaml").write_text(yaml.safe_dump({"version": 1,
+        "hechos": {"gato": {"clave": "gato", "valor": "Mishi"}}, clave: marcador}), encoding="utf-8")
+    out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
+    assert "- gato: Mishi" in out and "furgoneta" not in out.split("pendientes de conciliar")[0]
+    assert "camper" not in out.split("CONTEXTO>>>")[1]
+    assert "Olvidado: gato" in _proceso_migracion(tmp_path, "olvida mi gato", perfil_no_vaciable=False)
+    for _ in range(2):
+        out = _proceso_migracion(tmp_path, "¿qué recuerdas?", perfil_no_vaciable=False)
+        assert "ningún hecho" in out
+        contexto = out.split("CONTEXTO>>>")[1]
+        assert "Mishi" not in contexto and "camper" not in contexto
+    assert perfil.read_bytes() == original
+    datos = yaml.safe_load((tmp_path / "facts.yaml").read_text(encoding="utf-8"))
+    assert datos["hechos"] == {} and datos.get("perfil_migrado")                # el marcador se conserva (consolidado)
+    esperados = {"ajeno:vacio"} if not marcador else {v for v in marcador.values() if isinstance(v, str)} | {
+        h for v in marcador.values() if isinstance(v, list) for h in v}
+    assert all(any(m.endswith(e) for m in datos["perfil_migrado"]) for e in esperados)

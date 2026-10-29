@@ -413,7 +413,10 @@ backend (online or offline):
   identifies the current profile (a whole-profile digest), the profile counts
   as migrated. Any other marker — anything that is not one of B.A.I's own
   well-formed fingerprints (`hoja:`/`perfil:` + SHA-256), with or without a
-  `:` — is unrecognized: every profile entry that
+  `:`, including unknown strings or lists inside a dictionary-shaped marker
+  and a marker that is present but empty — is unrecognized and is preserved
+  as such (never discarded; non-text contents reject the file as invalid
+  without touching it): every profile entry that
   is not already a stored fact stays **pending reconciliation**: it is not
   imported, not injected into the context, and `user_profile.yaml` is left
   untouched — it might be a fact that was migrated and later forgotten. B.A.I

@@ -96,31 +96,38 @@ _CLAVES_RAIZ = {"version", "hechos", *_CLAVES_MARCADOR}
 _CLAVES_ENTRADA = {"clave", "valor", "actualizado", "origen"}
 
 
-_RE_HUELLA = re.compile(r"^(?:(?:hoja|perfil):)?(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$")
+# Marcador presente pero sin contenido interpretable (vacío o nulo): no lo escribe
+# ninguna versión propia, así que se conserva como marcador ajeno (incertidumbre).
+_MARCADOR_VACIO = "ajeno:vacio"
 
 
-def _huellas_de_marcador(nombre, valor):
-    """Acepta las formas con que se han escrito los marcadores: lista de huellas,
-    una sola huella o diccionario con huellas/listas. Cualquier otra cosa es esquema inválido."""
-    if valor is None:
+def _huellas_de_marcador(nombre, valor, presente):
+    """Huellas de un marcador de migración, de forma conservadora:
+    - lista de cadenas / una cadena: todas cuentan (las que no sean huellas
+      propias bien formadas se tratarán como de otra versión -> incertidumbre);
+    - diccionario: se conservan TODOS sus valores de texto (o listas de texto),
+      conocidos o no; nunca se descartan (descartarlos dejaría el marcador vacío
+      y permitiría reimportar datos ya olvidados);
+    - marcador presente pero vacío o nulo: marcador ajeno sin contenido;
+    - cualquier otra forma (números, anidamientos...): esquema inválido."""
+    if not presente:
         return set()
+    if valor is None or valor == "" or valor == [] or valor == {}:
+        return {_MARCADOR_VACIO}
     if isinstance(valor, str):
         return {valor}
     if isinstance(valor, list) and all(isinstance(h, str) for h in valor):
         return set(valor)
     if isinstance(valor, dict):
-        # En la forma diccionario puede haber metadatos (fecha, versión...): sólo
-        # cuentan como huellas los valores con forma de huella.
         huellas = set()
         for v in valor.values():
             if isinstance(v, str):
-                candidatas = [v]
+                huellas.add(v)
             elif isinstance(v, list) and all(isinstance(h, str) for h in v):
-                candidatas = v
+                huellas.update(v)
             else:
                 raise MemoriaHechosInvalida(f"'{nombre}' debe contener huellas (cadenas)")
-            huellas.update(h for h in candidatas if _RE_HUELLA.match(h))
-        return huellas
+        return huellas or {_MARCADOR_VACIO}
     raise MemoriaHechosInvalida(f"'{nombre}' debe ser una lista de huellas")
 
 
@@ -154,8 +161,9 @@ def _validar_almacen(datos):
             raise MemoriaHechosInvalida(f"entrada inválida para '{clave}': faltan 'clave'/'valor'")
         validados[clave] = dict(entrada)
     # 'legado_migrado' (alias) siempre contuvo huellas por hoja: se etiquetan como tales.
-    marcadores = {h if ":" in h else "hoja:" + h for h in _huellas_de_marcador("legado_migrado", datos.get("legado_migrado"))}
-    marcadores |= _huellas_de_marcador("perfil_migrado", datos.get("perfil_migrado"))
+    marcadores = {h if ":" in h else "hoja:" + h
+                  for h in _huellas_de_marcador("legado_migrado", datos.get("legado_migrado"), "legado_migrado" in datos)}
+    marcadores |= _huellas_de_marcador("perfil_migrado", datos.get("perfil_migrado"), "perfil_migrado" in datos)
     return {"hechos": validados, "perfil_migrado": marcadores}
 
 
