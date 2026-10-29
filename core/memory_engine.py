@@ -276,6 +276,13 @@ def guardar_hechos(hechos, perfil_migrado=None):
         datos["perfil_migrado"] = sorted(perfil_migrado)
     contenido = yaml.safe_dump(datos, allow_unicode=True, sort_keys=True)
     _escribir_atomico(FACTS_PATH, contenido, ".facts-")
+    # Verificación tras escribir: sólo se confirma lo que realmente ha quedado en disco.
+    try:
+        leido = _leer_almacen()
+    except (MemoriaHechosInvalida, ErrorLecturaMemoria) as e:
+        raise OSError(f"verificación tras escribir fallida: {e}") from e
+    if leido["hechos"] != hechos or leido["perfil_migrado"] != set(perfil_migrado):
+        raise OSError("verificación tras escribir fallida: el contenido leído no coincide con lo escrito")
 
 
 # --------------------------------------------------------------------------- migración del perfil heredado

@@ -51,6 +51,10 @@ MENSAJES = {
         "creado": "No tenía ese dato; lo guardo ahora: {clave} = {valor}.",
         "olvidado": "Olvidado: {clave} (era: {valor}). Ya no lo usaré.",
         "no_existia": "No tenía nada guardado sobre '{clave}'.",
+        "no_existia_actualizar": ("No tengo ningún dato guardado sobre '{clave}', así que no hay nada que actualizar. "
+                                  "Para guardarlo dime 'recuerda que {clave} es {valor}'."),
+        "aclarar_reset": ("Eso es el historial de la conversación, no la memoria persistente: para vaciarlo escribe "
+                          "'reset'. Para olvidar un hecho dime 'olvida <clave>'."),
         "olvidar_conflicto": ("Tengo guardado que {clave} es {anterior}, no '{valor}'. "
                               "Si quieres que lo olvide de todos modos dime 'olvida {clave}'."),
         "sugerencias": "No tengo nada guardado como '{clave}'. Quizá te refieres a: {lista}.",
@@ -101,6 +105,10 @@ MENSAJES = {
         "creado": "I didn't have that one; stored now: {clave} = {valor}.",
         "olvidado": "Forgotten: {clave} (was: {valor}). I will no longer use it.",
         "no_existia": "I had nothing stored about '{clave}'.",
+        "no_existia_actualizar": ("I have nothing stored about '{clave}', so there is nothing to update. "
+                                  "To store it say 'remember that {clave} is {valor}'."),
+        "aclarar_reset": ("That is the conversation history, not persistent memory: type 'reset' to clear it. "
+                          "To forget a fact say 'forget <key>'."),
         "olvidar_conflicto": ("I have {clave} = {anterior}, not '{valor}'. "
                               "Say 'forget {clave}' if you want me to drop it anyway."),
         "sugerencias": "I have nothing stored as '{clave}'. Did you mean: {lista}?",
@@ -184,26 +192,36 @@ _FIN = r"(?:[,]?\s+por\s+favor|[,]?\s+please)?\s*[.!]*\s*$"
 _FIN_PREGUNTA = r"(?:[,]?\s+por\s+favor|[,]?\s+please)?\s*[.!?]*\s*$"
 _PREG = r"(?:[¿¡]\s*)?"
 _QUE = r"(?:\s+(?:que|de\s+que|that))?"
+_CORTESIA_POST = r"(?:\s*,?\s*(?:por\s+favor|please)\s*,?)?"   # "recuerda, por favor, que..."
 
 # Objeto de memoria explícito que convierte un verbo genérico en una petición de memoria.
 _OBJ_MEMORIA = (r"(?:(?:en|a|de)\s+)?(?:tu\s+|la\s+|mi\s+|your\s+|the\s+)?(?:memoria|memory)"
                 r"|(?:como|este|ese|el|un)\s+(?:hecho|dato)|(?:as|this|that|the)\s+(?:a\s+)?fact"
-                r"|(?:in|to|into|from)\s+(?:your\s+)?memory|(?:lo\s+que|what\s+you)\s+(?:recuerdas|remember)")
+                r"|(?:in|to|into|from)\s+(?:your\s+)?memory|(?:lo\s+que|what\s+you)\s+(?:recuerdas|remember|sabes|know)")
 _OBJ = r"(?:" + _OBJ_MEMORIA + r")"
 
 # 1) Verbos con intención de memoria inequívoca: admiten el hecho directamente.
 _V_RECORDAR = (r"(?P<verbo>recuerda|acuerdate\s+de|no\s+olvides|no\s+te\s+olvides\s+de|memoriza|"
-               r"aprende|aprendete|ten\s+en\s+cuenta|quiero\s+que\s+recuerdes|necesito\s+que\s+recuerdes|"
+               r"ten\s+en\s+cuenta|quiero\s+que\s+recuerdes|necesito\s+que\s+recuerdes|"
                r"remember|don'?t\s+forget|do\s+not\s+forget|keep\s+in\s+mind|bear\s+in\s+mind|"
-               r"memorize|memorise|learn)")
+               r"memorize|memorise)")
+# "aprende"/"learn" sólo con marcador: "aprende que X es Y", "aprende: X es Y" ("aprende python" es conversación).
+_V_APRENDER = r"(?P<verbo>aprende|aprendete|learn)"
 # 2) Verbos genéricos: sólo con objeto de memoria explícito.
 _V_GENERICO_STORE = (r"(?P<verbo>guarda|guardate|graba|almacena|anota|anotame|apunta|apuntame|"
                      r"toma\s+nota|registra|save|store|note|note\s+down|write\s+down|make\s+a\s+note|"
                      r"record|jot\s+down|keep)")
 
+# 3) Peticiones corteses: sólo con "que"/"that" ("me gustaría que recordaras que X es Y").
+_V_RECORDAR_CORTES = (r"(?P<verbo>me\s+gustaria\s+que\s+(?:recordaras|recuerdes)|puedes\s+recordar|podrias\s+recordar|"
+                      r"i\s+want\s+you\s+to\s+remember|i'?d\s+like\s+you\s+to\s+remember|"
+                      r"(?:could|can|would)\s+you(?:\s+please)?\s+remember)")
+
 _P_RECORDAR = [
-    re.compile(_INI + _V_RECORDAR + r"(?:\s*,)?(?:\s+" + _OBJ + r")?" + r"(?:\s+(?:que|that|esto|this|de\s+que))?"
+    re.compile(_INI + _V_RECORDAR + _CORTESIA_POST + r"(?:\s*,)?(?:\s+" + _OBJ + r")?" + r"(?:\s+(?:que|that|esto|this|de\s+que))?"
                r"\s*:?\s+(?P<hecho>.+?)" + _FIN, re.S),
+    re.compile(_INI + _V_RECORDAR_CORTES + r"\s+(?:que|that)\s+(?P<hecho>.+?)" + _FIN, re.S),
+    re.compile(_INI + _V_APRENDER + r"(?:\s+(?:que|that)|\s*:)\s+(?P<hecho>.+?)" + _FIN, re.S),
     re.compile(_INI + _V_GENERICO_STORE + r"(?:\s+(?:esto|this|lo\s+siguiente|the\s+following))?\s*[:,]?\s*"
                r"(?:\s*" + _OBJ + r")" + r"(?:\s+(?:que|that|de\s+que|esto|this))?\s*:?\s+(?P<hecho>.+?)" + _FIN, re.S),
 ]
@@ -222,19 +240,32 @@ _P_ACTUALIZAR = re.compile(_INI + _V_ACTUALIZAR + r"\s+" + _OBJ + r"(?:\s+de|\s+
                            r"(?P<marca>\s*[:,]\s*|\s+(?:que|that)\s+|\s+)(?P<resto>.+?)" + _FIN, re.S)
 
 # Olvidar: verbos inequívocos (objeto opcional) o genéricos con objeto de memoria.
-_V_OLVIDAR = (r"(?P<verbo>olvidate\s+de|olvidate|olvida|ya\s+no\s+recuerdes|deja\s+de\s+recordar|"
+_V_OLVIDAR = (r"(?P<verbo>olvidate\s+de|olvidate|olvida|ya\s+no\s+recuerdes|no\s+recuerdes\s+mas|deja\s+de\s+recordar|"
               r"forget\s+about|forget|stop\s+remembering)")
 _V_GENERICO_FORGET = r"(?P<verbo>borra|elimina|quita|descarta|delete|remove|erase|drop|clear)"
+_TOTAL_GENERICO = (r"(?P<resto>(?:toda\s+|all\s+)?(?:tu\s+|la\s+|your\s+)?(?:memoria|memory)(?:\s+persistente)?|"
+                   r"todo\s+lo\s+que\s+sabes\s+(?:de|sobre)\s+mi|everything(?:\s+(?:you\s+know\s+)?about\s+me)?)")
 _P_OLVIDAR = [
-    re.compile(_INI + _V_OLVIDAR + r"(?:\s+" + _OBJ + r"(?:\s+de|\s+about)?)?" + _QUE + r"\s*:?\s+(?P<resto>.+?)" + _FIN, re.S),
+    re.compile(_INI + _V_OLVIDAR + _CORTESIA_POST + r"(?:\s+" + _OBJ + r"(?:\s+de|\s+about)?)?" + _QUE + r"\s*:?\s+(?P<resto>.+?)" + _FIN, re.S),
+    # borra toda tu memoria / erase your memory / elimina todo lo que sabes de mí
+    re.compile(_INI + _V_GENERICO_FORGET + r"\s+" + _TOTAL_GENERICO + _FIN, re.S),
     # borra de tu memoria X / elimina el hecho X / delete the fact X / remove X from your memory
     re.compile(_INI + _V_GENERICO_FORGET + r"\s+" + _OBJ + r"(?:\s+de|\s+about)?" + _QUE + r"\s*:?\s+(?P<resto>.+?)" + _FIN, re.S),
     re.compile(_INI + _V_GENERICO_FORGET + _QUE + r"\s+(?P<resto>.+?)\s+(?:de|from)\s+(?:tu\s+|la\s+|your\s+)?(?:memoria|memory)" + _FIN, re.S),
 ]
 
 _TOTALES = {"todo", "todos los hechos", "todos tus hechos", "todos los datos", "toda tu memoria",
-            "toda la memoria", "la memoria", "tu memoria", "everything", "all facts", "all the facts",
-            "all your facts", "your memory", "all stored facts", "all"}
+            "toda la memoria", "la memoria", "tu memoria", "memoria", "memoria persistente", "tu memoria persistente",
+            "la memoria persistente", "todo lo que sabes de mi", "todo lo que sabes sobre mi", "lo que sabes de mi",
+            "lo que sabes sobre mi", "everything", "everything about me", "everything you know about me",
+            "all facts", "all the facts", "all your facts", "your memory", "memory", "all stored facts", "all",
+            "all you know about me"}
+# Lo que suele preceder a la clave en una petición de olvido: "olvida lo de X", "olvida lo que sabes de X".
+_P_PREFIJO_RESTO = re.compile(r"^(?:todo\s+)?(?:lo\s+de|lo\s+que\s+sabes\s+(?:de|sobre)|el\s+dato\s+de|los\s+datos\s+de|"
+                              r"everything\s+(?:you\s+know\s+)?about|what\s+you\s+know\s+about|about)\s+", re.S)
+_P_SUFIJO_RESTO = re.compile(r"\s+(?:de|from)\s+(?:tu\s+|la\s+|your\s+)?(?:memoria|memory)(?:\s+persistente)?$", re.S)
+# Estas "claves" son el historial de conversación, no la memoria persistente.
+_HISTORIAL = {"conversacion", "historial", "chat", "conversation", "history", "sesion", "session", "charla"}
 _PRONOMBRES = {"eso", "esto", "lo", "eso ultimo", "esto ultimo", "it", "that", "this", "about it"}
 _P_CONFIRMA_TODO = re.compile(r"^(?:todo|todos\s+los\s+hechos|everything|all\s+facts|all)[,]?\s+"
                               r"(?:confirmo|lo\s+confirmo|confirm(?:ed)?|i\s+confirm)$")
@@ -244,10 +275,11 @@ _P_RECUPERAR = [
     # ¿qué sabes de MI X? / what do you know about MY X?  (sin posesivo es una pregunta general)
     re.compile(_INI + _PREG + r"(?:dime|tell\s+me)?\s*(?P<verbo>que\s+sabes|what\s+do\s+you\s+know)\s+"
                r"(?:de|sobre|acerca\s+de|about)\s+(?P<clave>" + _POSESIVO + r".+?)" + _FIN_PREGUNTA, re.S),
-    # ¿qué recuerdas (de X)? / what do you remember (about X)? / dime qué recuerdas...
+    # ¿qué recuerdas (de X)? / what do you remember (about X)? / dime qué recuerdas... / ¿qué tienes guardado de X?
     re.compile(_INI + _PREG + r"(?:dime|tell\s+me)?\s*(?P<verbo>que\s+recuerdas|lo\s+que\s+recuerdas|"
-               r"what\s+do\s+you\s+remember|what\s+you\s+remember)"
-               r"(?:\s+(?:de|sobre|about)\s+(?P<clave>.+?))?" + _FIN_PREGUNTA, re.S),
+               r"que\s+tienes\s+guardado|que\s+has\s+guardado|que\s+has\s+aprendido|"
+               r"what\s+do\s+you\s+remember|what\s+you\s+remember|what\s+have\s+you\s+(?:saved|stored|learned))"
+               r"(?:\s+(?:de|sobre|acerca\s+de|about)\s+(?P<clave>.+?))?" + _FIN_PREGUNTA, re.S),
     # ¿(no) recuerdas (que) X (es Y)? / do(n't) you remember (that) X?
     re.compile(_INI + _PREG + r"(?:no\s+)?(?P<verbo>te\s+acuerdas\s+de\s+que|te\s+acuerdas\s+de|te\s+acuerdas|"
                r"recuerdas\s+que|recuerdas|do\s+you\s+remember\s+that|do\s+you\s+remember|"
@@ -255,11 +287,15 @@ _P_RECUPERAR = [
     # ¿cuál es mi X? / what is my X?  (sólo con posesivo: lo demás es una pregunta normal)
     re.compile(_INI + _PREG + r"(?P<verbo>cual\s+es|cuales\s+son|what\s+is|what's|what\s+are)\s+"
                r"(?P<clave>" + _POSESIVO + r".+?)" + _FIN_PREGUNTA, re.S),
-    # muestra/lista tus hechos / show your facts / ver hechos
+    # muestra/lista tus hechos / show your facts / ver hechos / muestra tu memoria / muéstrame lo que sabes de mí
     re.compile(_INI + _PREG + r"(?P<verbo>muestra(?:me)?|lista(?:me)?|ensena(?:me)?|ver|show(?:\s+me)?|list)\s+"
-               r"(?:tus\s+|los\s+|mis\s+|the\s+|your\s+|my\s+|stored\s+|saved\s+)*"
-               r"(?:hechos|recuerdos|datos\s+guardados|memoria\s+persistente|facts|memories)"
+               r"(?:tus\s+|los\s+|mis\s+|la\s+|tu\s+|the\s+|your\s+|my\s+|stored\s+|saved\s+)*"
+               r"(?:hechos|recuerdos|datos\s+guardados|memoria\s+persistente|memoria|facts|memories|memory|"
+               r"lo\s+que\s+sabes\s+(?:de|sobre)\s+mi|what\s+you\s+know\s+about\s+me)"
                r"(?:\s+guardados|\s+que\s+recuerdas)?" + _FIN_PREGUNTA, re.S),
+    # ¿qué sabes de mí? / what do you know about me?
+    re.compile(_INI + _PREG + r"(?:dime|tell\s+me)?\s*(?P<verbo>que\s+sabes|what\s+do\s+you\s+know)\s+"
+               r"(?:de|sobre|acerca\s+de|about)\s+(?:mi|me)" + _FIN_PREGUNTA, re.S),
 ]
 
 # Separadores clave/valor, por prioridad. Se usa el primer tipo presente y se
@@ -269,7 +305,19 @@ _SEP_HECHO = [
     r"'s\s+name\s+is\s+",
     r"\s+(?:es|son)\s+",
     r"\s+(?:is|are)\s+",
+    r"\s+(?:esta|estan)\s+",
     r"\s*[:=]\s*",
+]
+# Actualización sin objeto de memoria: sólo actúa sobre un hecho que YA existe (nunca crea).
+#   actualiza X a Y | cambia X por Y | corrige X: Y | corrige X, ahora es Y | update X to Y
+_P_ACTUALIZAR_SIN_OBJ = re.compile(_INI + _V_ACTUALIZAR + r"\s+(?P<resto>.+?)" + _FIN, re.S)
+_P_CLAVE_MARCA_VALOR = re.compile(r"^(?P<clave>[^:,]+?)\s*[:,]\s*(?:ahora\s+(?:es|son)\s+|now\s+(?:is|are)\s+)?(?P<valor>.+)$", re.S)
+# Formas implícitas ("mi coche ahora es azul", "ahora mi coche es azul", "my car is now blue",
+# "mi coche ya no es rojo, ahora es azul"): sólo cuentan si el dato existe; si no, es conversación.
+_P_IMPLICITO = [
+    re.compile(r"^(?:ahora|now)[,]?\s+(?P<clave>.+?)\s+(?:es|son|is|are)\s+(?P<valor>.+)$", re.S),
+    re.compile(r"^(?P<clave>.+?)\s+(?:ya\s+no\s+(?:es|son)\s+.+?[,;]?\s*ahora\s+(?:es|son)|ahora\s+(?:es|son)|"
+               r"is\s+now|are\s+now|is\s+no\s+longer\s+.+?[,;]?\s*(?:now\s+)?(?:it\s+)?is)\s+(?P<valor>.+)$", re.S),
 ]
 _SEP_A = [r"\s*[:=]\s*", r"\s+(?:a|por|to)\s+"]   # "X a Y": 'a' también aparece dentro de claves ("viaje a Roma")
 # Un hecho negado nunca se guarda tal cual ("mi coche no es rojo" no define ningún valor).
@@ -296,6 +344,13 @@ _P_CONTRADICCION = re.compile(
     r"remember|forget|save|store|delete|remove|erase)\b")
 
 
+# Una "clave" que en realidad es una frase ("tengo que llamar a Juan porque...",
+# "me gusta el café...") no define ningún dato clave/valor: se pide aclaración.
+_P_CLAVE_FRASE = re.compile(r"^(?:tengo|tenemos|hay|debo|debemos|quiero|queremos|necesito|necesitamos|"
+                            r"me\s+gusta|me\s+gustan|no\s+|i\s+have|i\s+need|i\s+want|i\s+like|i\s+don'?t|"
+                            r"we\s+have|we\s+need)\b|\b(?:porque|because)\b", re.S)
+
+
 def _divisiones(original, plano, separadores):
     """Todas las formas de partir el texto en (clave, valor) con el primer tipo
     de separador presente. [] si no hay ninguna pareja clara."""
@@ -303,7 +358,7 @@ def _divisiones(original, plano, separadores):
         candidatos = []
         for m in re.finditer(sep, plano):
             clave, valor = original[:m.start()], original[m.end():]
-            if normalizar_clave(clave) and limpiar_valor(valor):
+            if normalizar_clave(clave) and limpiar_valor(valor) and not _P_CLAVE_FRASE.search(plano[:m.start()].strip()):
                 candidatos.append((clave, valor))
         if candidatos:
             return candidatos
@@ -344,7 +399,11 @@ def _resolver(candidatos, hechos, siempre_ambiguo_si_varios=False):
     if len(candidatos) == 1:
         return "ok", candidatos[0]
     existentes = [c for c in candidatos if normalizar_clave(c[0]) in hechos]
-    if not siempre_ambiguo_si_varios and (not existentes or existentes == [candidatos[0]]):
+    if siempre_ambiguo_si_varios:
+        if len(existentes) == 1:          # sólo una división nombra un hecho guardado: ésa es la clave completa
+            return "ok", existentes[0]
+        return "ambiguo", [clave_sin_articulo(c[0]) for c in candidatos]
+    if not existentes or existentes == [candidatos[0]]:
         return "ok", candidatos[0]
     return "ambiguo", [clave_sin_articulo(c[0]) for c in candidatos]
 
@@ -421,6 +480,8 @@ def _escribir_hechos(idioma, hechos_candidatos, modo, separadores_ambiguos=False
 
 def _hacer_olvidar(idioma, clave):
     visible = clave_sin_articulo(clave)
+    if normalizar_clave(clave) in _HISTORIAL:
+        return _msg(idioma, "aclarar_reset")
     valor = memory_engine.olvidar_hecho(clave)
     if valor is not None:
         return _msg(idioma, "olvidado", clave=visible, valor=valor)
@@ -469,19 +530,38 @@ def _hacer_comparar(idioma, clave, valor):
 
 
 # --------------------------------------------------------------------------- intentos por operación
-def _intentar_recuperar(original, plano):
-    for patron in _P_RECUPERAR[:2]:
-        m = patron.match(plano)
-        if m:
-            idioma = _idioma(m.group("verbo"))
-            clave, _ = _recorte(original, plano, m, "clave")
-            if clave is None or not normalizar_clave(clave):
-                return _con_almacen(idioma, lambda: _hacer_listar(idioma))
-            return _con_almacen(idioma, lambda: _hacer_consultar(idioma, clave))
+def _es_pregunta(plano):
+    return plano.startswith("¿") or plano.rstrip(" .!").endswith("?")
 
-    m = _P_RECUPERAR[2].match(plano)
+
+def _consultar_o_nada(idioma, clave):
+    """'¿qué sabes de mi X?': responde sólo si hay algo (exacto o parecido); si no,
+    es una pregunta general para el modelo (None)."""
+    if memory_engine.obtener_hecho(clave) is None and not memory_engine.buscar_hechos(clave):
+        return None
+    return _hacer_consultar(idioma, clave)
+
+
+def _intentar_recuperar(original, plano):
+    m = _P_RECUPERAR[0].match(plano)                      # ¿qué sabes de mi X?
     if m:
         idioma = _idioma(m.group("verbo"))
+        clave, _ = _recorte(original, plano, m, "clave")
+        return _con_almacen(idioma, lambda: _consultar_o_nada(idioma, clave))
+
+    m = _P_RECUPERAR[1].match(plano)                      # ¿qué recuerdas (de X)? / ¿qué tienes guardado de X?
+    if m:
+        idioma = _idioma(m.group("verbo"))
+        clave, _ = _recorte(original, plano, m, "clave")
+        if clave is None or not normalizar_clave(clave):
+            return _con_almacen(idioma, lambda: _hacer_listar(idioma))
+        return _con_almacen(idioma, lambda: _hacer_consultar(idioma, clave))
+
+    m = _P_RECUPERAR[2].match(plano)                      # ¿recuerdas X? / do you remember X?
+    if m:
+        idioma = _idioma(m.group("verbo"))
+        if idioma == "es" and not _es_pregunta(plano):
+            return None                                   # "recuerdas mi coche" sin signos: no es una consulta
         resto, resto_plano = _recorte(original, plano, m, "resto")
         # ¿recuerdas cuál es mi X?
         interno = re.match(r"^(?:cual\s+es|cuales\s+son|what\s+is|what's|what\s+are)\s+(.+)$", resto_plano, re.S)
@@ -495,23 +575,24 @@ def _intentar_recuperar(original, plano):
             return _con_almacen(idioma, lambda: _hacer_listar(idioma))
         return _con_almacen(idioma, lambda: _hacer_consultar(idioma, resto))
 
-    m = _P_RECUPERAR[3].match(plano)
+    m = _P_RECUPERAR[3].match(plano)                      # ¿cuál es mi X?
     if m:
         idioma = _idioma(m.group("verbo"))
         clave, _ = _recorte(original, plano, m, "clave")
         return _con_almacen(idioma, lambda: _hacer_consultar(idioma, clave))
 
-    m = _P_RECUPERAR[4].match(plano)
-    if m:
-        idioma = _idioma(m.group("verbo"))
-        return _con_almacen(idioma, lambda: _hacer_listar(idioma))
+    for patron in _P_RECUPERAR[4:]:                       # listar
+        m = patron.match(plano)
+        if m:
+            idioma = _idioma(m.group("verbo"))
+            return _con_almacen(idioma, lambda: _hacer_listar(idioma))
     return None
 
 
 def _intentar_negado(original, plano):
     """'no recuerdes que X es Y' / 'don't save my password': respuesta local, sin escribir."""
     m = _P_NEGADO.match(plano)
-    if not m:
+    if not m or re.match(_INI + r"no\s+recuerdes\s+mas\b", plano):
         return None
     idioma = _idioma(m.group("verbo"))
     hecho, hecho_plano = _recorte(original, plano, m, "hecho")
@@ -540,6 +621,21 @@ def _intentar_olvidar(original, plano):
     idioma = _idioma(m.group("verbo"))
     resto, resto_plano = _recorte(original, plano, m, "resto")
     resto_compacto = " ".join(resto_plano.split()).strip(" ¿?¡!.").strip()
+    # "olvida lo que sabes de mí": toda la cola tras el verbo puede ser una petición de borrado total
+    cola = re.sub(r"^(?:\s*,?\s*(?:por\s+favor|please)\s*,?)?\s*(?:que\s+|de\s+que\s+)?", "", plano[m.end("verbo"):])
+    cola = re.sub(r"(?:,?\s+por\s+favor|,?\s+please)?\s*[.!]*\s*$", "", cola)
+    cola_compacta = " ".join(cola.split()).strip(" ¿?¡!.").strip()
+    if cola_compacta in _TOTALES or _P_CONFIRMA_TODO.match(cola_compacta):
+        resto_compacto = cola_compacta
+    if resto_compacto not in _TOTALES and not _P_CONFIRMA_TODO.match(resto_compacto):
+        # "olvida lo de X", "olvida lo que sabes de X", "quita el dato de X de la memoria"
+        pre = _P_PREFIJO_RESTO.match(resto_plano)
+        if pre:
+            resto, resto_plano = resto[pre.end():], resto_plano[pre.end():]
+        suf = _P_SUFIJO_RESTO.search(resto_plano)
+        if suf:
+            resto, resto_plano = resto[:suf.start()], resto_plano[:suf.start()]
+        resto_compacto = " ".join(resto_plano.split()).strip(" ¿?¡!.").strip()
 
     if _P_CONFIRMA_TODO.match(resto_compacto):
         def borrar_todo():
@@ -587,26 +683,102 @@ def _intentar_olvidar(original, plano):
 
 def _intentar_actualizar(original, plano):
     m = _P_ACTUALIZAR.match(plano)
-    if not m:
-        return None
-    idioma = _idioma(m.group("verbo"))
-    resto, resto_plano = _recorte(original, plano, m, "resto")
-    problema = _problema_en_carga(idioma, resto, resto_plano)
-    if problema:
-        return problema
-    if m.group("marca").strip():
-        # "corrige tu memoria: X es Y" / "actualiza tu memoria que X es Y": uno o varios hechos
-        hechos = _parse_hechos(resto, resto_plano)
-        if hechos is None:
+    if m:
+        idioma = _idioma(m.group("verbo"))
+        resto, resto_plano = _recorte(original, plano, m, "resto")
+        problema = _problema_en_carga(idioma, resto, resto_plano)
+        if problema:
+            return problema
+        if m.group("marca").strip():
+            # "corrige tu memoria: X es Y" / "actualiza tu memoria que X es Y": uno o varios hechos
+            hechos = _parse_hechos(resto, resto_plano)
+            if hechos is None:
+                return _msg(idioma, "aclarar_actualizar")
+            return _con_almacen(idioma, lambda: _escribir_hechos(idioma, hechos, "actualizar"))
+        # "actualiza en tu memoria X a Y" / "X: Y": 'a/por/to' también aparece dentro de claves,
+        # así que varias divisiones posibles se aclaran salvo que sólo una nombre un hecho guardado.
+        candidatos = _divisiones(resto, resto_plano, _SEP_A)
+        if not candidatos:
             return _msg(idioma, "aclarar_actualizar")
-        return _con_almacen(idioma, lambda: _escribir_hechos(idioma, hechos, "actualizar"))
-    # "actualiza en tu memoria X a Y" / "X: Y": 'a/por/to' también aparece dentro de claves,
-    # así que varias divisiones posibles siempre se aclaran (la forma 'X: Y' es inequívoca).
-    candidatos = _divisiones(resto, resto_plano, _SEP_A)
-    if not candidatos:
-        return _msg(idioma, "aclarar_actualizar")
-    return _con_almacen(idioma, lambda: _escribir_hechos(idioma, [candidatos], "actualizar",
-                                                          separadores_ambiguos=True))
+        return _con_almacen(idioma, lambda: _escribir_hechos(idioma, [candidatos], "actualizar",
+                                                              separadores_ambiguos=True))
+
+    m = _P_ACTUALIZAR_SIN_OBJ.match(plano)
+    if m:
+        # Sin objeto de memoria: sólo se actúa sobre un hecho que YA existe; nunca se crea nada.
+        idioma = _idioma(m.group("verbo"))
+        explicito = re.match(r"(?:actualiza|update)$", m.group("verbo")) is not None
+        resto, resto_plano = _recorte(original, plano, m, "resto")
+        if _entre_comillas(resto) or _P_CITA.search(resto.replace("’", "'")) or _P_EJEMPLO.search(resto_plano) \
+                or _P_CONTRADICCION.search(resto_plano):
+            return None if not explicito else _problema_en_carga(idioma, resto, resto_plano)
+        mv = _P_CLAVE_MARCA_VALOR.match(resto_plano)
+        if mv:
+            candidatos = [(resto[mv.start("clave"):mv.end("clave")], resto[mv.start("valor"):mv.end("valor")])]
+        else:
+            candidatos = _divisiones(resto, resto_plano, [r"\s+(?:a|por|to)\s+"])
+        candidatos = [(c, v) for c, v in candidatos if normalizar_clave(c) and limpiar_valor(v)]
+        if not candidatos:
+            return None
+        return _con_almacen(idioma, lambda: _actualizar_existente(idioma, candidatos, explicito))
+    return None
+
+
+def _actualizar_existente(idioma, candidatos, explicito):
+    """Actualiza sólo si la clave completa ya está guardada. Varias claves guardadas
+    posibles -> aclaración. Ninguna -> informa (verbo explícito) o None (genérico)."""
+    hechos = memory_engine.cargar_hechos()
+    existentes = [c for c in candidatos if normalizar_clave(c[0]) in hechos]
+    if len(existentes) == 1:
+        clave, valor = existentes[0]
+        if _P_NEGACION_HECHO.search(_plano(valor)):
+            return _msg(idioma, "aclarar_negado")
+        return _escribir_hechos(idioma, [[(clave, valor)]], "actualizar")
+    if len(existentes) > 1:
+        return _msg(idioma, "aclarar_clave", opciones=", ".join(f"'{clave_sin_articulo(c[0])}'" for c in existentes))
+    if explicito:
+        clave, valor = candidatos[0]
+        return _msg(idioma, "no_existia_actualizar", clave=clave_sin_articulo(clave), valor=limpiar_valor(valor))
+    return None
+
+
+def _intentar_implicito(original, plano):
+    """'mi coche ahora es azul' / 'ahora mi coche es azul' / 'my car is now blue':
+    sólo es memoria si el dato ya existe; si no, es conversación normal (None)."""
+    for patron in _P_IMPLICITO:
+        m = patron.match(plano)
+        if not m:
+            continue
+        clave, clave_plano = _recorte(original, plano, m, "clave")
+        valor, valor_plano = _recorte(original, plano, m, "valor")
+        if not normalizar_clave(clave) or not limpiar_valor(valor):
+            return None
+        if _P_CITA.search(clave + valor) or _P_EJEMPLO.search(clave_plano + " " + valor_plano) \
+                or _P_CONTRADICCION.search(valor_plano) or _P_NEGACION_HECHO.search(valor_plano):
+            return None
+        idioma = "en" if re.search(r"\b(?:is|are)\b", plano) else "es"
+
+        def actualizar():
+            if normalizar_clave(clave) not in memory_engine.cargar_hechos():
+                return None
+            return _escribir_hechos(idioma, [[(clave, valor)]], "actualizar")
+        return _con_almacen(idioma, actualizar)
+    return None
+
+
+_P_TAMBIEN = re.compile(r"\s+(?:tambien|also|too)\b")
+
+
+def _quitar_tambien(hecho, hecho_plano):
+    """"mi coche también es azul" -> "mi coche es azul": 'también' no forma parte de la
+    clave ni del valor; el valor por clave es único, así que el resultado es un
+    guardado normal (o un conflicto, que se aclara)."""
+    while True:
+        m = _P_TAMBIEN.search(hecho_plano)
+        if not m:
+            return hecho, hecho_plano
+        hecho = hecho[:m.start()] + hecho[m.end():]
+        hecho_plano = hecho_plano[:m.start()] + hecho_plano[m.end():]
 
 
 def _intentar_recordar(original, plano):
@@ -625,6 +797,7 @@ def _intentar_recordar(original, plano):
         problema = _problema_en_carga(idioma, hecho, hecho_plano)
         if problema:
             return problema
+        hecho, hecho_plano = _quitar_tambien(hecho, hecho_plano)
         hechos = _parse_hechos(hecho, hecho_plano)
         if hechos is None:
             return _msg(idioma, "aclarar_hecho")
@@ -685,7 +858,7 @@ def procesar_comando_memoria(texto):
         return _intentar_incompleto(original, plano) if _P_INCOMPLETO[3][0].match(plano) else None
 
     for intentar in (_intentar_negado, _intentar_olvidar, _intentar_actualizar, _intentar_recordar,
-                     _intentar_incompleto):
+                     _intentar_implicito, _intentar_incompleto):
         respuesta = intentar(original, plano)
         if respuesta is not None:
             return respuesta
