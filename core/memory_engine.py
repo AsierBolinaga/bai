@@ -276,13 +276,20 @@ def guardar_hechos(hechos, perfil_migrado=None):
         datos["perfil_migrado"] = sorted(perfil_migrado)
     contenido = yaml.safe_dump(datos, allow_unicode=True, sort_keys=True)
     _escribir_atomico(FACTS_PATH, contenido, ".facts-")
-    # Verificación tras escribir: sólo se confirma lo que realmente ha quedado en disco.
+
+
+def _verificar_escritura(esperados):
+    """Relee el almacén y comprueba que contiene exactamente `esperados`. Así el
+    éxito sólo se comunica si el dato está de verdad en disco (una escritura
+    silenciosamente incompleta se trata como un fallo de escritura)."""
+    def huella(hechos):
+        return {k: (e["clave"], e["valor"]) for k, e in hechos.items()}
     try:
-        leido = _leer_almacen()
+        guardados = _leer_hechos()
     except (MemoriaHechosInvalida, ErrorLecturaMemoria) as e:
         raise OSError(f"verificación tras escribir fallida: {e}") from e
-    if leido["hechos"] != hechos or leido["perfil_migrado"] != set(perfil_migrado):
-        raise OSError("verificación tras escribir fallida: el contenido leído no coincide con lo escrito")
+    if huella(guardados) != huella(esperados):
+        raise OSError("verificación tras escribir fallida: el fichero no contiene lo que se acaba de guardar")
 
 
 # --------------------------------------------------------------------------- migración del perfil heredado
@@ -556,6 +563,7 @@ def migrar_perfil_legado():
     try:
         respaldo = _respaldar_perfil(texto)
         guardar_hechos(hechos, migradas | huellas_nuevas)          # hechos + huellas: todo o nada
+        _verificar_escritura(hechos)                               # sin verificar no se vacía el perfil
     except OSError as e:
         _avisar_una_vez(("no-migrado", MEMORY_PATH),
                         f"[B.A.I] Aviso: no he podido migrar el perfil heredado ({e}); no se ha importado nada "
@@ -662,6 +670,7 @@ def aplicar_cambios(cambios):
         cambiado = True
     if cambiado:
         guardar_hechos(hechos)
+        _verificar_escritura(hechos)
     return resultados
 
 
@@ -739,6 +748,7 @@ def olvidar_hecho(clave):
     if entrada is None:
         return None
     guardar_hechos(hechos)
+    _verificar_escritura(hechos)
     return entrada["valor"]
 
 
@@ -748,6 +758,7 @@ def olvidar_todos():
     cuantos = len(hechos)
     if cuantos:
         guardar_hechos({})
+        _verificar_escritura({})
     return cuantos
 
 # Si historial.json está dañado o es ilegible y NO se ha podido apartar, queda

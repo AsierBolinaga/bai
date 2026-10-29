@@ -150,7 +150,7 @@ Anything else is an ordinary message and **never** changes the mode: negations
 - `reset`: clears the conversation history
 - `ver memoria`: shows the current history
 
-**Memory requests (phase 7 — natural local learning)** — persistent
+**Memory requests (phase 7 — natural local learning, in progress)** — persistent
 facts are managed with natural-language requests, in Spanish or English,
 processed 100% locally (see "Memory and context" below for the guarantees):
 
@@ -158,7 +158,7 @@ processed 100% locally (see "Memory and context" below for the guarantees):
 |---|---|
 | Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `memoriza/aprende que...` · `ten en cuenta que...` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `learn that...` · several facts at once: `recuerda que mi gato se llama Mishi y mi perro se llama Rex` |
 | Retrieve | `¿qué sabes de mi furgoneta?` · `¿cuál es mi furgoneta?` · `¿recuerdas mi furgoneta?` · `¿qué recuerdas?` · `lista tus hechos` · `what is my van?` · `do you remember my van?` · `what do you remember?` · `show your facts` |
-| Update | `recuerda que ahora mi furgoneta es un monovolumen` · `actualiza en tu memoria X: Y` · `actualiza/cambia/corrige en tu memoria X a Y` · `corrige tu memoria: X es Y` · `remember that now X is Y` · `update the fact X to Y` · on an **already stored** fact only: `actualiza/cambia/corrige X a Y`, `corrige X, ahora es Y`, `mi X ahora es Y`, `ahora mi X es Y`, `my X is now Y`, `update/change X to Y` |
+| Update | `recuerda que ahora mi furgoneta es un monovolumen` · `actualiza en tu memoria X: Y` · `actualiza/cambia/corrige en tu memoria X a Y` · `corrige tu memoria: X es Y` · `remember that now X is Y` · `update the fact X to Y` |
 | Forget | `olvida mi furgoneta` · `olvídate de X` · `ya no recuerdes X` · `borra/elimina de tu memoria X` · `forget my van` · `remove X from your memory` · `olvida todo` / `forget everything` (asks for the confirmation phrase `olvida todo, confirmo` / `forget everything, confirm`) |
 
 **Explicit memory intent is required.** Verbs that *mean* remembering or
@@ -167,15 +167,8 @@ forgetting (`recuerda`, `no olvides`, `memoriza`, `aprende`, `olvida`,
 `apunta`, `actualiza`, `cambia`, `borra`, `elimina`, `save`, `note`, `set`,
 `update`, `delete`, `remove`…) are memory requests **only** with an explicit
 memory object (`en tu memoria`, `como hecho`, `el hecho X`, `in your memory`,
-`the fact X`…); `guarda que mi talla es 44` or `borra X` are ordinary messages
-that never save or delete a fact. The one exception is updating: `actualiza X
-a Y`, `cambia X por Y`, `mi X ahora es Y` act **only** on a fact that already
-exists (they never create one); `actualiza`/`update` on an unknown key answers
-locally that there is nothing to update, while `cambia`/`change`/`mi X ahora
-es Y` on an unknown key are ordinary conversation. Polite forms work too
-(`me gustaría que recordaras que…`, `puedes recordar que…`, `could you please
-remember that…`). `ver memoria`/`mostrar memoria` remain the CLI's
-conversation-history commands; use `ver hechos` / `muestra tu memoria` for facts. The *whole*
+`the fact X`…); `guarda que mi talla es 44`, `set X to Y` or `borra X` are
+ordinary messages that never save, change or delete a fact. The *whole*
 message must be the request (optional `B.A.I,` vocative and `por favor`/
 `please`); `online: recuerda que...` is also handled locally, in any mode.
 
@@ -453,7 +446,7 @@ backend (online or offline):
 4. **Controlled online mode (OpenAI)** – completed ✅  
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
-7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (validated with controlled backends, temporary storage and fresh processes, including the externally reviewed `tests/test_memoria.py` migrated to the current API; real-model runs optional)  
+7. Natural local learning (in progress: implementation and full suite, including the migrated `tests/test_memoria.py`, pass with controlled backends, temporary storage and fresh processes; pending sign-off on the `tests/test_memoria.py` cases rewritten to the current contract)  
 8. **Visual interface (UI)**  
 9. **Voice system**  
 10. **Cross-platform compatibility**  

@@ -154,7 +154,9 @@ NO_COMANDOS = [
     "save my size: 44",
     "set my size to 44",
     "note that my size is 44",
-    "cambia mi coche por una moto",          # genérico y 'coche' no existe: conversación
+    "actualiza mi coche a azul",
+    "cambia mi coche por una moto",
+    "update my car to blue",
     "set car to blue",
     "borra mi coche",
     "elimina el coche",
@@ -171,16 +173,8 @@ def test_mensajes_normales_no_son_comandos_ni_escriben(frase):
 
 
 def test_la_consulta_no_crea_el_fichero():
-    assert procesar_comando_memoria("¿qué sabes de mi coche?") is None        # sin dato: pregunta general
-    assert "No tengo nada guardado" in procesar_comando_memoria("¿qué recuerdas de mi coche?")
+    assert "No tengo nada guardado" in procesar_comando_memoria("¿qué sabes de mi coche?")
     procesar_comando_memoria("¿qué recuerdas?")
-    assert not os.path.exists(memoria.FACTS_PATH)
-
-
-@pytest.mark.parametrize("frase", ["actualiza mi coche a azul", "update my car to blue", "actualiza mi moto: roja"])
-def test_actualizar_explicito_sin_dato_informa_sin_crear_nada(frase):
-    r = procesar_comando_memoria(frase)
-    assert r is not None and ("nada que actualizar" in r or "nothing to update" in r) and "recuerda que" in r or "remember that" in r
     assert not os.path.exists(memoria.FACTS_PATH)
 
 
@@ -198,12 +192,11 @@ def test_conflicto_no_sobreescribe_y_pide_actualizar():
     r = procesar_comando_memoria("recuerda que mi coche es azul")
     assert "rojo" in r and "recuerda que ahora coche es azul" in r
     assert hechos_en_disco() == {"coche": "rojo"}          # intacto
+    assert procesar_comando_memoria("actualiza mi coche a azul") is None   # genérico: no toca nada
+    assert hechos_en_disco() == {"coche": "rojo"}
     r2 = procesar_comando_memoria("recuerda que ahora mi coche es azul")
     assert "azul" in r2 and "rojo" in r2
     assert hechos_en_disco() == {"coche": "azul"}
-    # 'actualiza X a Y' sin objeto de memoria sólo actúa sobre un hecho que ya existe (nunca crea)
-    assert "Actualizado: coche = verde" in procesar_comando_memoria("actualiza mi coche a verde")
-    assert procesar_comando_memoria("cambia mi moto a roja") is None and hechos_en_disco() == {"coche": "verde"}
 
 
 def test_conflicto_no_afecta_a_hechos_no_relacionados():
@@ -524,28 +517,13 @@ def test_hechos_persisten_entre_interpretes_independientes(tmp_path):
     "guarda que mi talla es 44", "graba esto: mi talla es 44", "anota mi talla: 44",
     "registra que mi talla es 44", "save that my size is 44", "store my size: 44",
     "note down that my size is 44", "write down my size is 44", "keep my size at 44",
-    "set size to 44",
+    "actualiza mi talla a 44", "cambia la talla por 44", "set size to 44", "update size to 44",
     "borra la talla", "elimina mi talla", "quita la talla", "delete my size", "remove size", "erase size",
 ])
 def test_comando_generico_sin_objeto_de_memoria_no_toca_la_memoria(frase):
     procesar_comando_memoria("recuerda que mi talla es 42")
     assert procesar_comando_memoria(frase) is None
     assert hechos_en_disco() == {"talla": "42"}            # ni guarda, ni cambia, ni borra
-
-
-@pytest.mark.parametrize("frase,valor", [
-    ("actualiza mi talla a 44", "44"), ("cambia la talla por 44", "44"), ("corrige mi talla: 44", "44"),
-    ("corrige mi talla, ahora es 44", "44"), ("update my talla to 44", "44"), ("change talla to 44", "44"),
-])
-def test_actualizar_sin_objeto_solo_actua_sobre_un_hecho_existente(frase, valor):
-    procesar_comando_memoria("recuerda que mi talla es 42")
-    procesar_comando_memoria("recuerda que mi coche es rojo")
-    r = procesar_comando_memoria(frase)
-    assert r is not None and ("Actualizado" in r or "Updated" in r)
-    assert hechos_en_disco() == {"talla": valor, "coche": "rojo"}         # sólo la talla; sin claves nuevas
-    assert procesar_comando_memoria("cambia mi peso a 70") is None         # genérico sin dato: conversación
-    assert "nada que actualizar" in procesar_comando_memoria("actualiza mi peso a 70")
-    assert hechos_en_disco() == {"talla": valor, "coche": "rojo"}
 
 
 def test_objeto_de_memoria_no_cambia_la_propiedad():

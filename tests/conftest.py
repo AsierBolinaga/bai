@@ -199,6 +199,21 @@ def memoria_temporal(monkeypatch, tmp_path):
 
 
 @pytest.fixture
+def perfil_temporal(monkeypatch, tmp_path):
+    """Ruta temporal del perfil heredado (user_profile.yaml, aún sin crear), con el
+    almacén de hechos (facts.yaml) y el historial redirigidos al mismo directorio
+    temporal. Usada por tests/test_memoria.py."""
+    import core.memory_engine as memoria
+
+    perfil = tmp_path / "user_profile.yaml"
+    monkeypatch.setattr(memoria, "MEMORY_PATH", str(perfil))
+    monkeypatch.setattr(memoria, "FACTS_PATH", str(tmp_path / "facts.yaml"))
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(tmp_path / "history"))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(tmp_path / "history" / "historial.json"))
+    return perfil
+
+
+@pytest.fixture
 def ai_engine_aislado(monkeypatch, memoria_temporal):
     """
     core.ai_engine sin efectos secundarios sobre config/data/*: la memoria
