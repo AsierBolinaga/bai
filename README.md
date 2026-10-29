@@ -150,7 +150,7 @@ Anything else is an ordinary message and **never** changes the mode: negations
 - `reset`: clears the conversation history
 - `ver memoria`: shows the current history
 
-**Memory requests (phase 7 — natural local learning)** — persistent
+**Memory requests (phase 7 — natural local learning, in progress)** — persistent
 facts are managed with natural-language requests, in Spanish or English,
 processed 100% locally (see "Memory and context" below for the guarantees):
 
@@ -446,7 +446,7 @@ backend (online or offline):
 4. **Controlled online mode (OpenAI)** – completed ✅  
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
-7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (validated with controlled backends, temporary storage and fresh processes; real-model runs optional)  
+7. Natural local learning (in progress: implementation and suite validated with controlled backends, temporary storage and fresh processes; pending the external coverage review of `tests/test_memoria.py`, not available in this workspace)  
 8. **Visual interface (UI)**  
 9. **Voice system**  
 10. **Cross-platform compatibility**  

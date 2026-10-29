@@ -39,7 +39,37 @@ SESSION_FILE = os.path.join(HISTORY_DIR, "historial.json")
 MEMORY_PATH = os.path.join(_PROJECT_ROOT, "config", "data", "user_profile.yaml")
 FACTS_PATH = os.path.join(_PROJECT_ROOT, "config", "data", "facts.yaml")
 MAX_MESSAGES = 5000
-os.makedirs(HISTORY_DIR, exist_ok=True)
+_MODO_DIR_PRIVADO = 0o700   # directorios de datos personales: sólo el usuario
+
+
+def _crear_directorio_privado(ruta):
+    """Crea `ruta` y los niveles que falten como 0700, sin tocar el umask del
+    proceso ni los permisos de los directorios que ya existen (p. ej. el
+    directorio del proyecto o config/). Lanza OSError si no se puede crear."""
+    pendientes = []
+    actual = os.path.abspath(ruta)
+    while not os.path.isdir(actual):
+        pendientes.append(actual)
+        padre = os.path.dirname(actual)
+        if padre == actual:
+            break
+        actual = padre
+    for nivel in reversed(pendientes):
+        try:
+            os.mkdir(nivel, _MODO_DIR_PRIVADO)
+        except FileExistsError:
+            continue
+        os.chmod(nivel, _MODO_DIR_PRIVADO)   # el umask no debe recortar lo que el usuario necesita
+
+
+def _es_directorio_privado(directorio):
+    """True si `directorio` es el de historial (o está dentro de él)."""
+    base = os.path.abspath(HISTORY_DIR)
+    d = os.path.abspath(directorio)
+    return d == base or d.startswith(base + os.sep)
+
+
+_crear_directorio_privado(HISTORY_DIR)
 
 
 VERSION_ESQUEMA = 1
@@ -215,7 +245,10 @@ def _escribir_atomico(ruta, contenido, prefijo):
     Lanza OSError si falla; el fichero anterior queda intacto. El temporal nace
     0600 (mkstemp) y se deja con los permisos previos del fichero, o 0600 si es nuevo."""
     directorio = os.path.dirname(ruta) or "."
-    os.makedirs(directorio, exist_ok=True)
+    if _es_directorio_privado(directorio):
+        _crear_directorio_privado(directorio)        # historial, rescates, manifiestos
+    else:
+        os.makedirs(directorio, exist_ok=True)       # config/data: directorio compartido, permisos habituales
     fd, temporal = tempfile.mkstemp(dir=directorio, prefix=prefijo, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -800,7 +833,7 @@ def load_full_history():
     messages = []
     _HISTORIAL_PROTEGIDO.pop(SESSION_FILE, None)
 
-    os.makedirs(HISTORY_DIR, exist_ok=True)
+    _crear_directorio_privado(HISTORY_DIR)
 
     absorbidos = {}   # nombre -> huella de lo que algún destino leído ya contiene
     # Cargar historial activo si existe

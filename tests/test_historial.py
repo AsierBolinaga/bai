@@ -108,7 +108,7 @@ def test_cli_sobrevive_a_un_historial_que_no_se_puede_guardar(monkeypatch, tmp_p
     monkeypatch.setattr(memoria, "SESSION_FILE", str(tmp_path / "no-existe" / "historial.json"))
     monkeypatch.setattr(assistant, "chat_history", [{"role": "user", "content": "x"}])
     monkeypatch.setattr(assistant, "describir_estado", lambda: "estado de prueba")
-    monkeypatch.setattr(os, "makedirs", lambda *a, **kw: (_ for _ in ()).throw(OSError("solo lectura (simulado)")))
+    monkeypatch.setattr(os, "mkdir", lambda *a, **kw: (_ for _ in ()).throw(OSError("solo lectura (simulado)")))
     monkeypatch.setattr(builtins, "input", lambda *_: "salir")
     assistant.run_assistant()
     out = capsys.readouterr().out
@@ -444,3 +444,75 @@ def test_historial_existente_pero_sin_stat_no_se_trata_como_ausente(historial, m
     monkeypatch.setattr("builtins.open", real_open)
     assert json.loads(fichero.read_text(encoding="utf-8")) == [{"role": "user", "content": "valioso"}]
     assert list(historial.glob("historial-rescate-*.json"))
+
+
+# --------------------------------------------------------------------------- privacidad de los directorios
+@pytest.fixture
+def umask_022():
+    anterior = os.umask(0o022)
+    yield
+    os.umask(anterior)
+
+
+def _modo(ruta):
+    import stat
+    return stat.S_IMODE(os.stat(ruta).st_mode)
+
+
+def test_history_se_crea_0700_al_importar_en_un_interprete_nuevo(umask_022, tmp_path):
+    """Copia temporal del proyecto (core/ + config/): importar core.memory_engine crea
+    history/ como 0700 sin tocar el directorio del proyecto ni config/."""
+    import shutil
+    import subprocess
+    import sys
+    from config.motors_config import PROJECT_ROOT
+    proyecto = tmp_path / "proyecto"
+    for sub in ("core", "config"):
+        shutil.copytree(PROJECT_ROOT / sub, proyecto / sub, ignore=shutil.ignore_patterns("__pycache__"))
+    antes = (_modo(proyecto), _modo(proyecto / "config"), _modo(proyecto / "config" / "data"))
+    r = subprocess.run([sys.executable, "-c", "import os; os.umask(0o022); import core.memory_engine"],
+                       cwd=str(proyecto), capture_output=True, text=True, timeout=60, env={"PATH": "/usr/bin:/bin"})
+    assert r.returncode == 0, r.stderr
+    assert _modo(proyecto / "history") == 0o700
+    assert (_modo(proyecto), _modo(proyecto / "config"), _modo(proyecto / "config" / "data")) == antes
+    assert not (proyecto / "history" / "historial.json").exists()      # importar no escribe ficheros
+
+
+def test_cada_nivel_nuevo_del_directorio_de_historial_es_0700(umask_022, monkeypatch, tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()                                                        # ya existente: no se toca
+    base.chmod(0o755)
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(base / "a" / "b" / "c"))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(base / "a" / "b" / "c" / "historial.json"))
+    assert memoria.load_full_history() == []
+    assert _modo(base) == 0o755
+    assert [_modo(base / "a"), _modo(base / "a" / "b"), _modo(base / "a" / "b" / "c")] == [0o700] * 3
+    assert _modo(memoria.SESSION_FILE) == 0o600
+    assert os.umask(0o022) == 0o022
+
+
+def test_escritura_en_historial_recrea_el_directorio_privado(umask_022, monkeypatch, tmp_path):
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(tmp_path / "h"))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(tmp_path / "h" / "historial.json"))
+    assert memoria.save_chat_history([{"role": "user", "content": "x"}]) is True   # sin load previo
+    assert _modo(tmp_path / "h") == 0o700 and _modo(memoria.SESSION_FILE) == 0o600
+
+
+def test_directorio_compartido_de_config_no_se_hace_privado(umask_022, monkeypatch, tmp_path):
+    """facts.yaml/user_profile.yaml viven en config/data (compartido): el directorio
+    se crea con los permisos habituales y sólo los ficheros son 0600."""
+    monkeypatch.setattr(memoria, "FACTS_PATH", str(tmp_path / "cfg" / "data" / "facts.yaml"))
+    monkeypatch.setattr(memoria, "MEMORY_PATH", str(tmp_path / "cfg" / "data" / "user_profile.yaml"))
+    memoria.guardar_hechos({})
+    assert _modo(tmp_path / "cfg") == 0o755 and _modo(tmp_path / "cfg" / "data") == 0o755
+    assert _modo(memoria.FACTS_PATH) == 0o600
+
+
+def test_directorio_de_historial_existente_conserva_sus_permisos(umask_022, monkeypatch, tmp_path):
+    h = tmp_path / "h"
+    h.mkdir()
+    h.chmod(0o750)
+    monkeypatch.setattr(memoria, "HISTORY_DIR", str(h))
+    monkeypatch.setattr(memoria, "SESSION_FILE", str(h / "historial.json"))
+    memoria.load_full_history()
+    assert _modo(h) == 0o750
