@@ -27,6 +27,8 @@ def run_assistant():
             if user_input.lower() in ["reset", "limpiar"]:
                 chat_history.clear()
                 print(f"[{nombre_ia}] Memoria de sesión limpiada.")
+                if not save_chat_history(chat_history):
+                    print(f"[{nombre_ia}] No he podido guardar el historial vacío en disco.")
                 continue
 
             # Las peticiones de memoria ("recuerda que...", "olvida...", "¿qué

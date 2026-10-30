@@ -58,14 +58,17 @@ Sólo confirmo una escritura cuando se ha guardado correctamente.
 HISTORIAL Y VENTANA
 Cargo el historial guardado al iniciar y guardo la conversación tras los turnos
 y al cerrar. Limpiar o 'limpiar'/'reset' vacía la sesión en curso; no elimina
-los hechos persistentes. En la ventana, ese vaciado se guarda en el siguiente
-turno o al cerrar. No equivale a borrar todos los archivos de historial.
+los hechos persistentes. El historial vacío se guarda inmediatamente; si falla
+el guardado, te aviso. No equivale a borrar todos los archivos de historial.
 Proceso un mensaje a la vez; puedes redimensionar la ventana y desplazarte
 por el chat. Escribe 'salir' o cierra la ventana para terminar.
+Si hay una generación en curso, el cierre espera sin congelar la ventana y
+guarda al terminar. No cancela la generación: si el motor no termina, el cierre
+sigue esperando. Si falla el guardado, la ventana queda abierta para reintentar.
 
-VOZ LOCAL (VENTANA, FASE 9 COMPLETADA)
-Esta fase incluye lectura de respuestas, no reconocimiento por micrófono
-ni clonación de voces.
+VOZ LOCAL (VENTANA, FASE 9 EN PROGRESO)
+Actualmente puedo leer respuestas. Todavía no incluyo entrada por micrófono,
+reconocimiento de voz ni clonación de voces.
 El botón 'Voz: OFF' activa la lectura de las siguientes respuestas en español.
 'Voz: ON' la silencia y corta el audio. También se detiene al enviar un mensaje
 nuevo o cerrar. Está desactivada al abrir; requiere Piper, un modelo de voz

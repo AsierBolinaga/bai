@@ -6,6 +6,7 @@ y el resultado vuelve al hilo de Tk por una cola, nunca llamando a Tk desde el h
 """
 import math
 import queue
+import threading
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -133,6 +134,10 @@ class VentanaBai:
         self.controlador = controlador or ControladorChat()
         self.raiz = raiz or tk.Tk()
         self._cola = queue.Queue()
+        self._cola_cierre = queue.Queue()
+        self._cerrando = False
+        self._cerrada = False
+        self._hilo_turno = None
         self._voz = voz if voz is not None else VozLocal()
         self._voz_activada = False
         self._hablando = False
@@ -258,6 +263,8 @@ class VentanaBai:
         self._cargar_voces()
 
     def _probar_voz(self):
+        if self._cerrando:
+            return
         if self.controlador.ocupado:
             self._mostrar("aviso", "Espera a que termine la respuesta para probar la voz.", "aviso")
             return
@@ -306,7 +313,7 @@ class VentanaBai:
 
     # ---------------------------------------------------------------- acciones
     def enviar(self, texto=None):
-        if self.controlador.ocupado:
+        if self._cerrando or self.controlador.ocupado:
             return
         if texto is None:
             texto = self.entrada.get().strip()
@@ -320,20 +327,43 @@ class VentanaBai:
         self._detener_voz()
         self._mostrar(master_name, texto)
         self._bloquear(True)
-        self.controlador.enviar_en_hilo(texto, self._cola.put)
+        self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
 
     def cerrar(self):
+        if self._cerrando:
+            return
+        self._cerrando = True
         self._detener_voz()
         self.esfera.activar(False)
-        self.controlador.cerrar()
-        self.raiz.destroy()
+        self.entrada.configure(state="disabled")
+        self.boton_enviar.configure(state="disabled")
+        for boton in self.botones_barra + [self.boton_voz, self.boton_probar_voz]:
+            boton.configure(state="disabled")
+        self.selector_voz.configure(state="disabled")
+        self._mostrar("aviso", "Cerrando: espero a que termine la operación y guardo el historial.", "aviso")
+
+        # Esperar el cerrojo o el disco nunca debe bloquear el hilo de Tk.
+        def guardar():
+            try:
+                if self._hilo_turno is not None:
+                    self._hilo_turno.join()
+                guardado = self.controlador.cerrar()
+            except Exception as error:
+                self._cola_cierre.put((False, str(error)))
+            else:
+                self._cola_cierre.put((bool(guardado), None))
+
+        threading.Thread(target=guardar, name="bai-ui-cierre", daemon=True).start()
 
     def _al_destruir(self, evento):
         if evento.widget is self.raiz:
+            self._cerrada = True
             self._voz.detener()
             self.raiz.after_cancel(self._temporizador_cola)
 
     def _alternar_voz(self):
+        if self._cerrando:
+            return
         if not self._voz_activada and not self._voz.disponible:
             self._mostrar("aviso", f"Voz local no disponible. {self._voz.motivo_no_disponible}", "aviso")
             return
@@ -362,6 +392,22 @@ class VentanaBai:
     # ------------------------------------------------------------- presentación
     def _vaciar_cola(self):
         try:
+            guardado, error = self._cola_cierre.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            if guardado:
+                self.raiz.destroy()
+                return
+            self._cerrando = False
+            self._mostrar("aviso", "No he podido guardar el historial al cerrar"
+                          + (f": {error}" if error else ". Revisa la consola.")
+                          + " La ventana sigue abierta; puedes reintentar el cierre.", "aviso")
+            for boton in self.botones_barra + [self.boton_voz, self.boton_probar_voz]:
+                boton.configure(state="normal")
+            self.selector_voz.configure(state="readonly")
+            self._bloquear(self.controlador.ocupado)
+        try:
             while True:
                 self._pintar_turno(self._cola.get_nowait())
         except queue.Empty:
@@ -383,8 +429,9 @@ class VentanaBai:
         self._mostrar(nombre_ia, turno.texto)
         if not turno.guardado:
             self._mostrar("aviso", "No he podido guardar el historial en disco; revisa la consola.", "aviso")
-        self._bloquear(False)
-        if self._voz_activada:
+        if not self._cerrando:
+            self._bloquear(False)
+        if self._voz_activada and not self._cerrando:
             self._leer(turno.texto)
 
     def _mostrar(self, autor, texto, etiqueta=None):

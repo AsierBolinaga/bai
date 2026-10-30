@@ -118,7 +118,7 @@ resizable input field with a focus indicator. A small blue sphere above the
 input pulses while a request is processed and while its answer is read aloud,
 with separate preparing/speaking labels. Its pulse is decorative, not an audio
 waveform or measured progress.
-**Phase 9 — Voice system: completed (local speech output in the desktop UI).**
+**Phase 9 — Voice system: in progress (local speech output implemented).**
 The **Voz: OFF / Voz: ON** button toggles optional local Spanish speech, off at
 startup. It uses **Piper** with the **es_ES-davefx-medium** neural voice (Spanish,
 Spain), not a film voice clone. Speech runs on CPU and streams to `aplay`
@@ -183,15 +183,23 @@ BAI_VOZ_MODELO="/path/to/voice.onnx" ./bai.sh --ui
 The [davefx model card](https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_ES/davefx/medium/MODEL_CARD)
 lists its dataset as CC0; review the model card/license of each replacement voice.
 The selected model is local and ignored by Git. Voice quality and preference
-depend on the selected model and personal preference. This phase covers speech
-output, not microphone input, speech recognition or voice cloning.
+depend on the selected model and personal preference. The current implementation
+covers speech output only. Microphone input and speech recognition are not
+implemented; hands-free hotword activation remains a later roadmap item.
+Voice cloning is not implemented.
 
 It uses the same `ask()` as the console, so memory
 requests, mode commands, offline guarantees and history behave identically; the
 *Online* button is the same explicit authorization as typing *"pasa a modo
 online"*. Messages are processed in a worker thread (the window never freezes),
 engine fallback notices appear in the conversation, and closing the window saves
-the history. The window connects to the display *before* the process isolation
+the history. Closing during generation waits in a background thread, keeping Tk
+responsive and rejecting new requests. It does not cancel engine inference;
+if a backend never returns, closing continues to wait. A failed final save keeps
+the window open with a visible error so the user can retry.
+`limpiar`/`reset` immediately saves the empty session history in both interfaces;
+save failures are reported, and persistent facts are not deleted.
+The window connects to the display *before* the process isolation
 is applied, so an already open connection keeps working inside the namespace.
 Without a display, `--ui` exits with a message and the console keeps working.
 
@@ -288,19 +296,6 @@ with `número de la suerte` stored) is answered with key *suggestions*, never
 with a value presented as confirmed. Recognizable but incomplete requests
 (`recuerda`, `olvídalo`, `borra de tu memoria`, `¿recuerdas?`) are clarified
 locally — also with the `online:` prefix — and never reach any backend.
-
----|---|
-| Remember | `recuerda que mi furgoneta es una camper` · `no olvides que...` · `apunta/anota/memoriza que...` · `aprende: X es Y` · `remember that my van is a camper` · `don't forget that...` · `keep in mind that...` · `note down that...` |
-| Retrieve | `¿qué sabes de mi furgoneta?` · `¿cuál es mi furgoneta?` · `¿recuerdas mi furgoneta?` · `¿qué recuerdas?` · `lista tus hechos` · `what is my van?` · `do you remember my van?` · `what do you remember?` · `show your facts` |
-| Update | `actualiza mi furgoneta a un monovolumen` · `cambia X a/por Y` · `corrige: X es Y` · `recuerda que ahora X es Y` · `update X to Y` · `change/set X to Y` |
-| Forget | `olvida mi furgoneta` · `olvídate de X` · `borra/elimina X` · `ya no recuerdes X` · `forget my van` · `delete/stop remembering X` · `olvida todo` / `forget everything` (asks for the confirmation phrase `olvida todo, confirmo` / `forget everything, confirm`) |
-
-The *whole* message must be the request (optional `B.A.I,` vocative and
-`por favor`/`please`). Everything else is ordinary conversation and **never**
-writes to memory: plain statements ("mi furgoneta es una camper"), questions,
-negations ("no recuerdes que..."), quoted examples and assistant responses.
-Ambiguous requests ("recuerda eso", a value that conflicts with a stored one,
-"olvida todo") get a clarification/confirmation instead of a guess.
 
 ---
 
@@ -545,7 +540,7 @@ backend (online or offline):
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
 8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command, local help and animated activity sphere, `python bai.py --ui`; window tests use a virtual display, real-namespace validation remains limited by the host)
-9. **Voice system** – completed ✅ (optional local Piper speech output, installed-voice selector, sample playback, mute/cancellation and speaking animation; no microphone input, speech recognition or voice cloning)
+9. **Voice system** – in progress (optional local Piper speech output, installed-voice selector, sample playback, mute/cancellation and speaking animation implemented; microphone input and speech recognition not implemented; responsive deferred UI closing and immediate history-reset persistence implemented; hotword activation remains a later roadmap item, voice cloning not implemented)
 10. **Cross-platform compatibility**  
 11. **Full synchronization across devices** ✨ → version 1.0.0 reached
 

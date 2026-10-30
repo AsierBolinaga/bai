@@ -80,7 +80,8 @@ class ControladorChat:
     def _procesar(self, texto):
         if texto.lower() in COMANDOS_LIMPIAR:
             self.historial.clear()
-            return Turno(MENSAJE_LIMPIADO, [], True, True)
+            guardado = bool(self._guardar(self.historial))
+            return Turno(MENSAJE_LIMPIADO, [], guardado, True)
 
         self._avisos = []
         antes = _instalar_avisador(self._avisos.append)

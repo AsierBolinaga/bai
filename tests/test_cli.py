@@ -244,6 +244,30 @@ def test_cli_informa_sin_exito_falso_si_no_puede_guardar(cli, capsys, monkeypatc
 
 
 # --------------------------------------------------------------------------- integridad del historial
+@pytest.mark.parametrize("orden", ["limpiar", "reset"])
+def test_reset_guarda_antes_de_pedir_siguiente_entrada(cli, monkeypatch, capsys, orden):
+    cli.ejecutar(["hola", "salir"], capsys)
+    entradas = iter([orden])
+
+    def entrada(*args):
+        try:
+            return next(entradas)
+        except StopIteration:
+            assert cli.historial_guardado() == []
+            raise EOFError("fin abrupto simulado")
+
+    monkeypatch.setattr(builtins, "input", entrada)
+    with pytest.raises(EOFError, match="fin abrupto"):
+        assistant.run_assistant()
+    assert cli.historial_guardado() == []
+
+
+def test_reset_cli_avisa_si_falla_guardado(cli, monkeypatch, capsys):
+    monkeypatch.setattr(assistant, "save_chat_history", lambda historial: False)
+    salida = cli.ejecutar(["reset", "salir"], capsys)
+    assert "No he podido guardar el historial vacío en disco" in salida
+
+
 def test_historial_persiste_entre_sesiones_y_reset_lo_vacia(cli, capsys):
     cli.ejecutar(["primera pregunta", "salir"], capsys)
     assert len(cli.historial_guardado()) == 2

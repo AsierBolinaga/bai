@@ -55,13 +55,29 @@ def test_texto_vacio_no_hace_nada(entorno):
     assert entorno.fake.motores.todos["off_a"].llamadas == []
 
 
-def test_limpiar_vacia_el_historial_y_lo_guarda_vacio_en_el_siguiente_turno(entorno):
+def test_limpiar_y_reset_guardan_inmediatamente_historial_vacio(entorno):
     c = ControladorChat(historial=[])
     c.enviar("hola")
     for orden in ("limpiar", "RESET"):
         t = c.enviar(orden)
         assert t.texto == MENSAJE_LIMPIADO and t.limpiado and c.historial == []
+        assert t.guardado and entorno.guardado() == []
+        assert ControladorChat().historial == []
     assert len(entorno.fake.motores.todos["off_a"].llamadas) == 1      # limpiar no llega al motor
+
+
+@pytest.mark.parametrize("orden", ["limpiar", "reset"])
+def test_limpiar_informa_fallo_guardado(entorno, orden):
+    guardados = []
+
+    def guardar(historial):
+        guardados.append(list(historial))
+        return False
+
+    c = ControladorChat(historial=[{"role": "user", "content": "previo"}], guardar=guardar)
+    turno = c.enviar(orden)
+    assert turno.limpiado and not turno.guardado
+    assert guardados == [[]] and c.historial == []
 
 
 def test_cambio_de_modo_y_estado_usan_los_comandos_reales(entorno):
@@ -251,6 +267,7 @@ def test_ventana_cierra_guardando(ventana_tk, entorno):
     v.enviar("hola")
     _esperar(v, lambda: "respuesta de off_a" in _chat(v))
     v.cerrar()
+    _esperar(v, lambda: v._cerrada)
     assert entorno.guardado()[-1]["content"] == "respuesta de off_a"
 
 
@@ -439,7 +456,59 @@ def test_voz_se_corta_con_nuevo_mensaje_y_al_cerrar(ventana_tk, voz_fake):
     assert not voz_fake.activo
     _esperar(v, lambda: v._hablando)
     v.cerrar()
+    _esperar(v, lambda: v._cerrada)
     assert not voz_fake.activo
+
+
+def test_cierre_durante_generacion_no_bloquea_tk_y_guarda_al_final(ventana_tk, entorno):
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+
+    def preguntar(texto, historial):
+        entra.set()
+        assert sale.wait(5)
+        historial.extend([{"role": "user", "content": texto},
+                          {"role": "assistant", "content": "respuesta final"}])
+        return "respuesta final"
+
+    v.controlador._preguntar = preguntar
+    v.enviar("lenta")
+    assert entra.wait(5)
+    try:
+        inicio = time.monotonic()
+        v.cerrar()
+        v.cerrar()
+        assert time.monotonic() - inicio < 0.5
+        latidos = []
+        v.raiz.after(10, lambda: latidos.append(True))
+        _esperar(v, lambda: bool(latidos))
+        assert not v._cerrada and v._cerrando
+        v.enviar("no debe entrar")
+        assert "no debe entrar" not in _chat(v)
+    finally:
+        sale.set()
+    _esperar(v, lambda: v._cerrada)
+    assert entorno.guardado()[-1]["content"] == "respuesta final"
+
+
+@pytest.mark.parametrize("excepcion", [False, True])
+def test_cierre_fallido_mantiene_ventana_y_permite_reintentar(ventana_tk, excepcion):
+    v = ventana_tk
+
+    def fallar(historial):
+        if excepcion:
+            raise OSError("disco inaccesible")
+        return False
+
+    v.controlador._guardar = fallar
+    v.cerrar()
+    _esperar(v, lambda: not v._cerrando)
+    assert not v._cerrada
+    assert "No he podido guardar el historial al cerrar" in _chat(v)
+    assert str(v.entrada.cget("state")) == "normal"
+    v.controlador._guardar = lambda historial: True
+    v.cerrar()
+    _esperar(v, lambda: v._cerrada)
 
 
 def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
