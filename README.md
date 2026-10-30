@@ -118,13 +118,74 @@ resizable input field with a focus indicator. A small blue sphere above the
 input pulses while a request is processed and while its answer is read aloud,
 with separate preparing/speaking labels. Its pulse is decorative, not an audio
 waveform or measured progress.
-**Voice system: in progress (experimental, not complete).**
+**Phase 9 — Voice system: completed (local speech output in the desktop UI).**
 The **Voz: OFF / Voz: ON** button toggles optional local Spanish speech, off at
-startup. It uses the installed eSpeak NG shared library (Linux package
-`espeak-ng`), with a slower, lower-pitched synthetic voice, not a film voice clone.
-No online TTS, model downloads or persistent audio files are used. Mute, a new
-message or closing the window stops playback. Missing libraries and audio
+startup. It uses **Piper** with the **es_ES-davefx-medium** neural voice (Spanish,
+Spain), not a film voice clone. Speech runs on CPU and streams to `aplay`
+(Linux package `alsa-utils`), without persistent audio files.
+No online TTS or automatic model downloads are used at runtime. Mute, a new
+message or closing the window stops synthesis and playback. Missing dependencies and audio
 errors are shown in the chat; an available audio device is required.
+
+Optional voice setup (installation/download require internet; normal use does not):
+
+```bash
+venv/bin/python -m pip install -r requirements-voz.txt
+mkdir -p models/voz
+venv/bin/python -m piper.download_voices --download-dir models/voz es_ES-davefx-medium
+```
+
+The `.onnx` and `.onnx.json` files must both be present in `models/voz/`.
+The dropdown below the chat input lists installed Piper models in that folder
+(including subfolders), plus the externally configured voice, when complete.
+Open it to refresh the list, select a voice to switch without restarting, and
+click **Probar voz** to hear a sample without enabling automatic reading.
+Switching stops current speech. Selection is session-only; the environment
+variable below sets the startup voice. No voices are downloaded by the selector.
+With only one installed model, only one option appears: install another licensed
+Piper model and its matching JSON to compare voices.
+Additional male voices tested locally: `es_ES-carlfm-x_low` (Spanish, public-domain
+dataset), `en_GB-northern_english_male-medium` (English, CC-BY-SA 4.0 dataset),
+and `eu_ES-antton-medium` (Basque, CC-BY 4.0 dataset).
+An additional female Basque voice, `eu_ES-maider-medium` (CC-BY 4.0 dataset),
+is also tested locally. Their upstream model cards
+are kept alongside the locally downloaded files. These are separate monolingual
+voices, not one multilingual speaker or a JARVIS clone. Select the appropriate
+voice manually for each language; there is no automatic language detection.
+The sample button uses English/Basque for standard `en_`/`eu_` model filenames,
+and Spanish otherwise. Renaming a model can change that sample selection.
+
+The local comparison collection contains 20 model options (not bundled in Git):
+
+| Language | Installed model identifiers |
+|---|---|
+| Spanish, Spain | `es_ES-davefx-medium`, `es_ES-carlfm-x_low`, `es_ES-mls_10246-low`, `es_ES-mls_9972-low` |
+| Spanish, Argentina / Mexico | `es_AR-daniela-high`, `es_MX-ald-medium`, `es_MX-claude-high` |
+| Basque | `eu_ES-antton-medium`, `eu_ES-maider-medium` |
+| British English | `en_GB-northern_english_male-medium`, `en_GB-alba-medium`, `en_GB-cori-high`, `en_GB-southern_english_female-low` |
+| US English | `en_US-bryce-medium`, `en_US-joe-medium`, `en_US-john-medium`, `en_US-kristin-medium`, `en_US-hfc_female-medium`, `en_US-hfc_male-medium`, `en_US-ryan-high` |
+
+**Non-commercial restriction:** the HFC female/male and Ryan dataset cards specify
+CC BY-NC-SA 4.0. Do not use those voices commercially without the necessary
+permission. Other cards specify public domain/CC0, CC BY, CC BY-SA, Unlicense
+or Apache-2.0; preserve attribution and any applicable share-alike requirements.
+Each newly downloaded model includes its upstream `MODEL_CARD` locally.
+More options do not guarantee higher perceived quality: compare with **Probar voz**.
+
+To select another installed Piper voice, set `BAI_VOZ_MODELO` to its `.onnx`
+path before launching B.A.I. Paths containing spaces are supported:
+
+```bash
+BAI_VOZ_MODELO="/path/to/voice.onnx" ./bai.sh --ui
+```
+
+[Piper](https://github.com/OHF-Voice/piper1-gpl) is GPL-3.0-or-later.
+The [davefx model card](https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_ES/davefx/medium/MODEL_CARD)
+lists its dataset as CC0; review the model card/license of each replacement voice.
+The selected model is local and ignored by Git. Voice quality and preference
+depend on the selected model and personal preference. This phase covers speech
+output, not microphone input, speech recognition or voice cloning.
+
 It uses the same `ask()` as the console, so memory
 requests, mode commands, offline guarantees and history behave identically; the
 *Online* button is the same explicit authorization as typing *"pasa a modo
@@ -269,7 +330,7 @@ core/
 ├── assistant.py         # Main CLI
 ├── ui_controlador.py    # Phase 8: window controller (no Tk): send, state, clear, save, worker thread
 ├── ui_tk.py             # Phase 8: tkinter chat window on top of the controller
-├── voz.py               # Optional local eSpeak NG speech in a cancelable process
+├── voz.py               # Optional local Piper neural speech in a cancelable process
 ├── memory_engine.py     # Fact store (atomic, validated) + history + memory context
 ├── memory_commands.py   # Phase 7: natural-language memory requests (local, deterministic)
 ├── offline_engine.py    # Compatibility facade: force offline motors
@@ -483,8 +544,8 @@ backend (online or offline):
 5. **Robust history and flow** – completed ✅  
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
-8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command and local help, `python bai.py --ui`; full suite validated, window shown under a virtual display, real-screen and real-namespace runs are manual checks)
-9. **Voice system**  
+8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command, local help and animated activity sphere, `python bai.py --ui`; window tests use a virtual display, real-namespace validation remains limited by the host)
+9. **Voice system** – completed ✅ (optional local Piper speech output, installed-voice selector, sample playback, mute/cancellation and speaking animation; no microphone input, speech recognition or voice cloning)
 10. **Cross-platform compatibility**  
 11. **Full synchronization across devices** ✨ → version 1.0.0 reached
 

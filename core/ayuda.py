@@ -63,13 +63,25 @@ turno o al cerrar. No equivale a borrar todos los archivos de historial.
 Proceso un mensaje a la vez; puedes redimensionar la ventana y desplazarte
 por el chat. Escribe 'salir' o cierra la ventana para terminar.
 
-VOZ LOCAL (VENTANA, EN DESARROLLO)
-El sistema de voz es experimental y aún no se considera terminado.
+VOZ LOCAL (VENTANA, FASE 9 COMPLETADA)
+Esta fase incluye lectura de respuestas, no reconocimiento por micrófono
+ni clonación de voces.
 El botón 'Voz: OFF' activa la lectura de las siguientes respuestas en español.
 'Voz: ON' la silencia y corta el audio. También se detiene al enviar un mensaje
-nuevo o cerrar. Está desactivada al abrir; requiere la biblioteca eSpeak NG
-instalada y una salida de audio disponible. No usa servicios online ni descarga
-modelos. Es una voz sintética propia, no la voz de JARVIS de las películas.
+nuevo o cerrar. Está desactivada al abrir; requiere Piper, un modelo de voz
+instalado y el reproductor aplay con una salida de audio disponible.
+La voz instalada es davefx, en español de España. Una vez instalada funciona
+sin internet: no usa servicios online ni descarga modelos automáticamente.
+No es la voz de JARVIS de las películas.
+El desplegable bajo la entrada permite cambiar entre modelos Piper instalados
+en models/voz, sin reiniciar. Se actualiza al abrirlo. 'Probar voz' reproduce
+una frase sin activar la lectura automática (inglés/euskera para modelos cuyos
+nombres empiezan por en_/eu_; castellano para el resto).
+Cada modelo tiene su idioma: cambia manualmente entre castellano, inglés
+y euskera. No es una sola voz multilingüe ni hay detección automática de idioma.
+Cambiar de voz corta el audio
+anterior; la selección dura esta sesión. Para añadir una voz necesitas sus
+archivos .onnx y .onnx.json y revisar su licencia.
 La esfera indica cuándo preparo la respuesta y cuándo la estoy leyendo;
 su pulso es decorativo, no sigue la amplitud del sonido.
 

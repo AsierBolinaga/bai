@@ -289,6 +289,9 @@ def test_ventana_es_responsive_y_mantiene_la_entrada_visible(ventana_tk):
         assert v.entrada.winfo_ismapped() and v.boton_enviar.winfo_ismapped()
         assert v.entrada.winfo_y() + v.entrada.winfo_height() <= v.raiz.winfo_height()
         assert v.chat.winfo_width() > 100
+        assert v.chat.winfo_ismapped() and v.chat.winfo_height() > 20
+        assert v.boton_probar_voz.winfo_rooty() + v.boton_probar_voz.winfo_height() <= (
+            v.raiz.winfo_rooty() + v.raiz.winfo_height())
         for boton in v.botones_barra:
             assert boton.winfo_rootx() >= v.raiz.winfo_rootx()
             assert boton.winfo_rootx() + boton.winfo_width() <= v.raiz.winfo_rootx() + v.raiz.winfo_width()
@@ -386,6 +389,8 @@ def test_esfera_cancela_animacion_al_destruir(ventana_tk):
 def voz_fake(ventana_tk):
     class Voz:
         disponible = True
+        texto_prueba = "Hola, Boli. Así suena esta voz."
+        motivo_no_disponible = "Instala Piper para activarla."
         activo = False
         error = None
         textos = []
@@ -441,7 +446,7 @@ def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
     v = ventana_tk
     voz_fake.disponible = False
     v._alternar_voz()
-    assert "Instala eSpeak NG" in _chat(v) and not v._voz_activada
+    assert "Instala Piper" in _chat(v) and not v._voz_activada
     voz_fake.disponible = True
     v._alternar_voz()
     v.enviar("ayuda")
@@ -450,3 +455,41 @@ def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
     voz_fake.activo = False
     _esperar(v, lambda: "sin altavoz" in _chat(v))
     assert not v._hablando and v.esfera._temporizador is None
+
+
+def test_selector_cambia_voz_y_prueba_sin_activar_lectura(ventana_tk, voz_fake, tmp_path):
+    v = ventana_tk
+    primera, segunda = tmp_path / "primera.onnx", tmp_path / "segunda.onnx"
+    voz_fake.modelo = primera
+    voz_fake.modelos_instalados = lambda: [primera, segunda]
+
+    def seleccionar(ruta):
+        voz_fake.detener()
+        voz_fake.modelo = ruta
+
+    voz_fake.seleccionar_modelo = seleccionar
+    v._cargar_voces()
+    assert v.selector_voz.get() == "primera"
+    v.selector_voz.set("segunda")
+    v._seleccionar_voz()
+    assert voz_fake.modelo == segunda
+    v._probar_voz()
+    assert v._hablando and not v._voz_activada
+    assert "Así suena esta voz" in voz_fake.textos[-1]
+    v.selector_voz.set("primera")
+    v._seleccionar_voz()
+    assert not v._hablando and not voz_fake.activo
+
+
+def test_selector_informa_si_modelo_desaparece(ventana_tk, voz_fake, tmp_path):
+    v = ventana_tk
+    voz_fake.modelo = tmp_path / "ausente.onnx"
+    voz_fake.modelos_instalados = lambda: [voz_fake.modelo]
+
+    def fallar(ruta):
+        raise ValueError("modelo borrado")
+
+    voz_fake.seleccionar_modelo = fallar
+    v._cargar_voces()
+    v._seleccionar_voz()
+    assert "modelo borrado" in _chat(v)

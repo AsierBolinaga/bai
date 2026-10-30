@@ -1,0 +1,2 @@
+# Optional offline neural speech (GPL-3.0-or-later).
+piper-tts>=1.4,<2

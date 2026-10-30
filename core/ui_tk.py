@@ -170,7 +170,7 @@ class VentanaBai:
         self.barra.bind("<Configure>", self._reordenar_barra)
 
         # El pie se empaqueta antes que el chat para conservarse al encoger la ventana.
-        pie = tk.Frame(self.raiz, bg=COLORES["fondo"], padx=10, pady=10)
+        pie = tk.Frame(self.raiz, bg=COLORES["fondo"], padx=10, pady=6)
         pie.pack(side="bottom", fill="x")
         pie.columnconfigure(0, weight=1)
         self.esfera = EsferaActividad(pie)
@@ -201,6 +201,14 @@ class VentanaBai:
         self.entrada.bind("<Return>", lambda _e: self.enviar())
         self.boton_enviar = self._boton(pie, "Enviar", self.enviar, COLORES["acento"])
         self.boton_enviar.grid(row=1, column=1, padx=(8, 0), sticky="ns")
+        self.selector_voz = ttk.Combobox(
+            pie, state="readonly", width=1, style="Bai.TCombobox",
+            postcommand=self._cargar_voces)
+        self.selector_voz.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        self.selector_voz.bind("<<ComboboxSelected>>", self._seleccionar_voz)
+        self.boton_probar_voz = self._boton(pie, "Probar voz", self._probar_voz, COLORES["boton"])
+        self.boton_probar_voz.grid(row=2, column=1, padx=(8, 0), pady=(2, 0))
+        self._cargar_voces()
 
         centro = tk.Frame(self.raiz, bg=COLORES["fondo"])
         centro.pack(fill="both", expand=True)
@@ -219,6 +227,42 @@ class VentanaBai:
 
     def _boton(self, padre, texto, comando, color):
         return BotonRedondo(padre, texto, comando, color)
+
+    def _cargar_voces(self):
+        try:
+            modelos = self._voz.modelos_instalados()
+        except OSError as error:
+            self.selector_voz.set(f"No se pueden listar las voces: {error}")
+            self.selector_voz.configure(values=())
+            self._modelos_voz = {}
+            return
+        nombres = [p.stem for p in modelos]
+        self._modelos_voz = {
+            p.stem if nombres.count(p.stem) == 1 else str(p): p for p in modelos
+        }
+        self.selector_voz.configure(values=tuple(self._modelos_voz))
+        seleccionado = next(
+            (nombre for nombre, ruta in self._modelos_voz.items() if ruta == self._voz.modelo),
+            "Sin voces instaladas")
+        self.selector_voz.set(seleccionado)
+
+    def _seleccionar_voz(self, _evento=None):
+        nombre = self.selector_voz.get()
+        try:
+            self._voz.seleccionar_modelo(self._modelos_voz[nombre])
+        except (OSError, ValueError, KeyError) as error:
+            self._mostrar("aviso", f"No se ha podido cambiar la voz: {error}", "aviso")
+        else:
+            self._hablando = False
+            self.esfera.activar(self.controlador.ocupado)
+        self._cargar_voces()
+
+    def _probar_voz(self):
+        if self.controlador.ocupado:
+            self._mostrar("aviso", "Espera a que termine la respuesta para probar la voz.", "aviso")
+            return
+        self._detener_voz()
+        self._leer(self._voz.texto_prueba)
 
     def _ajustar_entrada(self, evento):
         temporal = _rect_redondeado(
@@ -239,6 +283,12 @@ class VentanaBai:
             bordercolor=COLORES["fondo"], arrowcolor=COLORES["texto"], lightcolor=COLORES["boton"],
             darkcolor=COLORES["boton"], gripcount=0)
         estilo.map("Bai.Vertical.TScrollbar", background=[("active", COLORES["hover"])])
+        estilo.configure("Bai.TCombobox", fieldbackground=COLORES["entrada"],
+                         background=COLORES["boton"], foreground=COLORES["texto_suave"])
+        estilo.map("Bai.TCombobox", fieldbackground=[("readonly", COLORES["entrada"])],
+                   foreground=[("readonly", COLORES["texto_suave"])],
+                   selectbackground=[("readonly", COLORES["seleccion"])],
+                   selectforeground=[("readonly", COLORES["texto"])])
 
     def _reordenar_barra(self, evento):
         estrecha = evento.width < ANCHO_BARRA_ESTRECHA
@@ -285,7 +335,7 @@ class VentanaBai:
 
     def _alternar_voz(self):
         if not self._voz_activada and not self._voz.disponible:
-            self._mostrar("aviso", "Voz local no disponible. Instala eSpeak NG para activarla.", "aviso")
+            self._mostrar("aviso", f"Voz local no disponible. {self._voz.motivo_no_disponible}", "aviso")
             return
         self._voz_activada = not self._voz_activada
         self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: ON" if self._voz_activada else "Voz: OFF")

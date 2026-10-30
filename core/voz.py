@@ -1,26 +1,69 @@
-"""Lectura local opcional mediante eSpeak NG, aislada en un proceso cancelable."""
-import ctypes
-import ctypes.util
+"""Voz neuronal Piper local, experimental y cancelable, sin descargas automáticas."""
+import importlib.util
+import os
 from pathlib import Path
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 
+DIRECTORIO_VOCES = Path(__file__).resolve().parents[1] / "models/voz"
+
 
 class VozLocal:
     def __init__(self):
-        self._biblioteca = ctypes.util.find_library("espeak-ng") or ctypes.util.find_library("espeak")
+        self._modelo = Path(os.environ.get(
+            "BAI_VOZ_MODELO",
+            str(DIRECTORIO_VOCES / "es_ES-davefx-medium.onnx"),
+        )).expanduser().resolve()
         self._proceso = None
         self._errores = None
 
     @property
+    def modelo(self):
+        return self._modelo
+
+    @property
+    def texto_prueba(self):
+        if self._modelo.name.startswith("en_"):
+            return "Hello, Boli. I am B.A.I, your personal assistant. This is how this voice sounds."
+        if self._modelo.name.startswith("eu_"):
+            return "Kaixo, Boli. B.A.I naiz, zure laguntzaile pertsonala. Hau da nire ahotsa."
+        return "Hola, Boli. Soy B.A.I, tu asistente personal. Así suena esta voz."
+
+    def modelos_instalados(self):
+        candidatos = set(DIRECTORIO_VOCES.rglob("*.onnx"))
+        candidatos.add(self._modelo)
+        return sorted(
+            (p.resolve() for p in candidatos if p.is_file() and Path(str(p) + ".json").is_file()),
+            key=str)
+
+    def seleccionar_modelo(self, ruta):
+        modelo = Path(ruta).expanduser().resolve()
+        if modelo.suffix != ".onnx" or not modelo.is_file() or not Path(str(modelo) + ".json").is_file():
+            raise ValueError(f"Modelo Piper incompleto: {modelo}. Necesito .onnx y .onnx.json.")
+        self.detener()
+        self._modelo = modelo
+
+    @property
     def disponible(self):
-        return self._biblioteca is not None
+        return self.motivo_no_disponible is None
+
+    @property
+    def motivo_no_disponible(self):
+        if importlib.util.find_spec("piper") is None:
+            return "Instala Piper con 'venv/bin/python -m pip install -r requirements-voz.txt'."
+        if not self._modelo.is_file() or not Path(str(self._modelo) + ".json").is_file():
+            return f"Falta el modelo Piper o su configuración: {self._modelo} (.onnx y .onnx.json)."
+        if shutil.which("aplay") is None:
+            return "Falta el reproductor local aplay (paquete alsa-utils en Linux)."
+        return None
 
     def hablar(self, texto):
         self.detener()
         if not self.disponible:
-            raise RuntimeError("Voz local no disponible: instala eSpeak NG (paquete espeak-ng en Linux).")
+            raise RuntimeError(self.motivo_no_disponible)
         errores = tempfile.TemporaryFile()
         try:
             # No hay shell ni texto en los argumentos del proceso; stdin no deja copias persistentes.
@@ -28,7 +71,7 @@ class VozLocal:
                 entrada.write(texto.encode("utf-8"))
                 entrada.seek(0)
                 self._proceso = subprocess.Popen(
-                    [sys.executable, str(Path(__file__).resolve()), "--reproducir"],
+                    [sys.executable, str(Path(__file__).resolve()), "--reproducir", str(self._modelo)],
                     stdin=entrada, stdout=subprocess.DEVNULL, stderr=errores)
         except OSError:
             errores.close()
@@ -54,7 +97,7 @@ class VozLocal:
             if self._proceso.poll() is None:
                 self._proceso.terminate()
                 try:
-                    self._proceso.wait(timeout=0.5)
+                    self._proceso.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     self._proceso.kill()
                     self._proceso.wait()
@@ -66,48 +109,44 @@ class VozLocal:
         self._errores = None
 
 
-def _reproducir(texto):
-    biblioteca = ctypes.util.find_library("espeak-ng") or ctypes.util.find_library("espeak")
-    if biblioteca is None:
-        raise RuntimeError("No se encuentra la biblioteca eSpeak NG.")
-    motor = ctypes.CDLL(biblioteca)
-    motor.espeak_Initialize.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
-    motor.espeak_Initialize.restype = ctypes.c_int
-    motor.espeak_SetVoiceByName.argtypes = [ctypes.c_char_p]
-    motor.espeak_SetVoiceByName.restype = ctypes.c_int
-    motor.espeak_SetParameter.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    motor.espeak_SetParameter.restype = ctypes.c_int
-    motor.espeak_Synth.argtypes = [
-        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint, ctypes.c_int, ctypes.c_uint,
-        ctypes.c_uint, ctypes.POINTER(ctypes.c_uint), ctypes.c_void_p]
-    motor.espeak_Synth.restype = ctypes.c_int
-    motor.espeak_Synchronize.argtypes = []
-    motor.espeak_Synchronize.restype = ctypes.c_int
-    motor.espeak_Terminate.argtypes = []
-    motor.espeak_Terminate.restype = ctypes.c_int
-    if motor.espeak_Initialize(0, 0, None, 0) <= 0:
-        raise RuntimeError("No se puede inicializar el audio local.")
+def _reproducir(texto, modelo):
+    from piper import PiperVoice, SynthesisConfig
+
+    motor = PiperVoice.load(modelo, use_cuda=False)
+    reproductor = None
     try:
-        if motor.espeak_SetVoiceByName(b"es") != 0:
-            raise RuntimeError("La voz en español de eSpeak NG no está disponible.")
-        # Velocidad pausada, tono grave y rango contenido; no clona ninguna voz.
-        for parametro, valor in ((1, 150), (3, 35), (4, 35)):
-            if motor.espeak_SetParameter(parametro, valor, 0) != 0:
-                raise RuntimeError("No se puede configurar la voz local.")
-        datos = ctypes.create_string_buffer(texto.encode("utf-8"))
-        if motor.espeak_Synth(datos, len(datos), 0, 1, 0, 1, None, None) != 0:
-            raise RuntimeError("No se puede sintetizar el texto.")
-        if motor.espeak_Synchronize() != 0:
-            raise RuntimeError("No se ha podido completar la reproducción.")
+        for audio in motor.synthesize(texto, syn_config=SynthesisConfig(length_scale=1.05)):
+            if reproductor is None:
+                reproductor = subprocess.Popen(
+                    ["aplay", "-q", "-t", "raw", "-f", "S16_LE",
+                     "-r", str(audio.sample_rate), "-c", str(audio.sample_channels)],
+                    stdin=subprocess.PIPE)
+            reproductor.stdin.write(audio.audio_int16_bytes)
+            reproductor.stdin.flush()
+        if reproductor is not None:
+            reproductor.stdin.close()
+            if reproductor.wait() != 0:
+                raise RuntimeError("El reproductor de audio local ha fallado.")
     finally:
-        motor.espeak_Terminate()
+        if reproductor is not None and reproductor.poll() is None:
+            reproductor.terminate()
+            try:
+                reproductor.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                reproductor.kill()
+                reproductor.wait()
+
+
+def _cancelar(_senal, _marco):
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] != ["--reproducir"]:
-        raise SystemExit("Uso interno: python -m core.voz --reproducir")
+    if len(sys.argv) != 3 or sys.argv[1] != "--reproducir":
+        raise SystemExit("Uso interno: python -m core.voz --reproducir MODELO")
+    signal.signal(signal.SIGTERM, _cancelar)
     try:
-        _reproducir(sys.stdin.read())
-    except (OSError, RuntimeError) as error:
+        _reproducir(sys.stdin.read(), sys.argv[2])
+    except (OSError, RuntimeError, ValueError, ImportError) as error:
         print(error, file=sys.stderr)
         raise SystemExit(1)
