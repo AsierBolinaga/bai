@@ -1,6 +1,7 @@
 from core.config import nombre_ia, master_name
 from core.memory_engine import save_chat_history, load_full_history
 from core.ai_engine import ask, describir_estado
+from core.reinicio import aviso_reinicio, codigo_modo, modo_reinicio
 
 chat_history = load_full_history()
 
@@ -13,6 +14,14 @@ def run_assistant():
     while True:
         try:
             user_input = input("bai> ").strip()
+            modo = modo_reinicio(user_input)
+            if modo is not None:
+                print(f"[{nombre_ia}] {aviso_reinicio(modo)}")
+                if input("¿Continuar? [s/N] ").strip().lower() in ("s", "si", "sí"):
+                    if save_chat_history(chat_history):
+                        return codigo_modo(modo)
+                    print(f"[{nombre_ia}] No se puede reiniciar: ha fallado el guardado del historial.")
+                continue
 
             if user_input.lower() in ["salir", "exit", "irten", "atera", "amaitu", "quit"]:
                 print(f"[{nombre_ia}] Agur, {master_name}.")

@@ -1,7 +1,7 @@
 """Voz neuronal Piper local, experimental y cancelable, sin descargas automáticas."""
 import importlib.util
-import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -9,42 +9,51 @@ import sys
 import tempfile
 
 DIRECTORIO_VOCES = Path(__file__).resolve().parents[1] / "models/voz"
+SILENCIO_INICIAL_SEGUNDOS = 3
+VOCES = {
+    "es": "es_ES-davefx-medium.onnx",
+    "eu": "eu_ES-antton-medium/eu_ES-antton-medium.onnx",
+    "en": "en_GB-northern_english_male-medium/en_GB-northern_english_male-medium.onnx",
+}
+
+
+def detectar_idioma(texto):
+    from langid.langid import LanguageIdentifier, model
+
+    palabras = re.findall(r"[^\W\d_]+", texto.casefold())
+    breve = " ".join(palabras)
+    if len(palabras) <= 3:
+        if breve in ("kaixo", "kaixo boli", "egun on", "gabon", "agur", "eskerrik asko",
+                     "bai", "ez", "ondo", "zer moduz"):
+            return "eu"
+        if breve in ("hola", "hola boli", "buenos dias", "buenos días", "buenas tardes",
+                     "buenas noches", "gracias", "adios", "adiós", "si", "sí", "vale"):
+            return "es"
+    if not palabras:
+        return "en"
+    # La detección se ejecuta en el proceso de voz, nunca en el hilo de Tk.
+    detector = LanguageIdentifier.from_modelstring(model, norm_probs=False)
+    idioma, _ = detector.classify(texto)
+    return idioma
+
+
+def modelo_para_texto(texto, directorio):
+    idioma = detectar_idioma(texto)
+    modelo = Path(directorio) / VOCES.get(idioma, VOCES["en"])
+    if not modelo.is_file() or not Path(str(modelo) + ".json").is_file():
+        raise RuntimeError(f"Falta la voz automática para el idioma {idioma}: {modelo} (.onnx y .onnx.json).")
+    return modelo
 
 
 class VozLocal:
     def __init__(self):
-        self._modelo = Path(os.environ.get(
-            "BAI_VOZ_MODELO",
-            str(DIRECTORIO_VOCES / "es_ES-davefx-medium.onnx"),
-        )).expanduser().resolve()
+        self._modelo = (DIRECTORIO_VOCES / VOCES["es"]).resolve()
         self._proceso = None
         self._errores = None
 
     @property
     def modelo(self):
         return self._modelo
-
-    @property
-    def texto_prueba(self):
-        if self._modelo.name.startswith("en_"):
-            return "Hello, Boli. I am B.A.I, your personal assistant. This is how this voice sounds."
-        if self._modelo.name.startswith("eu_"):
-            return "Kaixo, Boli. B.A.I naiz, zure laguntzaile pertsonala. Hau da nire ahotsa."
-        return "Hola, Boli. Soy B.A.I, tu asistente personal. Así suena esta voz."
-
-    def modelos_instalados(self):
-        candidatos = set(DIRECTORIO_VOCES.rglob("*.onnx"))
-        candidatos.add(self._modelo)
-        return sorted(
-            (p.resolve() for p in candidatos if p.is_file() and Path(str(p) + ".json").is_file()),
-            key=str)
-
-    def seleccionar_modelo(self, ruta):
-        modelo = Path(ruta).expanduser().resolve()
-        if modelo.suffix != ".onnx" or not modelo.is_file() or not Path(str(modelo) + ".json").is_file():
-            raise ValueError(f"Modelo Piper incompleto: {modelo}. Necesito .onnx y .onnx.json.")
-        self.detener()
-        self._modelo = modelo
 
     @property
     def disponible(self):
@@ -54,8 +63,12 @@ class VozLocal:
     def motivo_no_disponible(self):
         if importlib.util.find_spec("piper") is None:
             return "Instala Piper con 'venv/bin/python -m pip install -r requirements-voz.txt'."
-        if not self._modelo.is_file() or not Path(str(self._modelo) + ".json").is_file():
-            return f"Falta el modelo Piper o su configuración: {self._modelo} (.onnx y .onnx.json)."
+        if importlib.util.find_spec("langid") is None:
+            return "Instala el detector local con 'venv/bin/python -m pip install -r requirements-voz.txt'."
+        for ruta in VOCES.values():
+            modelo = DIRECTORIO_VOCES / ruta
+            if not modelo.is_file() or not Path(str(modelo) + ".json").is_file():
+                return f"Falta el modelo Piper o su configuración: {modelo} (.onnx y .onnx.json)."
         if shutil.which("aplay") is None:
             return "Falta el reproductor local aplay (paquete alsa-utils en Linux)."
         return None
@@ -71,7 +84,7 @@ class VozLocal:
                 entrada.write(texto.encode("utf-8"))
                 entrada.seek(0)
                 self._proceso = subprocess.Popen(
-                    [sys.executable, str(Path(__file__).resolve()), "--reproducir", str(self._modelo)],
+                    [sys.executable, str(Path(__file__).resolve()), "--reproducir", str(DIRECTORIO_VOCES)],
                     stdin=entrada, stdout=subprocess.DEVNULL, stderr=errores)
         except OSError:
             errores.close()
@@ -121,6 +134,9 @@ def _reproducir(texto, modelo):
                     ["aplay", "-q", "-t", "raw", "-f", "S16_LE",
                      "-r", str(audio.sample_rate), "-c", str(audio.sample_channels)],
                     stdin=subprocess.PIPE)
+                # La salida de audio puede tardar en activarse y perder las primeras palabras.
+                muestras = round(audio.sample_rate * SILENCIO_INICIAL_SEGUNDOS)
+                reproductor.stdin.write(b"\0" * (muestras * audio.sample_channels * 2))
             reproductor.stdin.write(audio.audio_int16_bytes)
             reproductor.stdin.flush()
         if reproductor is not None:
@@ -143,10 +159,11 @@ def _cancelar(_senal, _marco):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3 or sys.argv[1] != "--reproducir":
-        raise SystemExit("Uso interno: python -m core.voz --reproducir MODELO")
+        raise SystemExit("Uso interno: python -m core.voz --reproducir DIRECTORIO_VOCES")
     signal.signal(signal.SIGTERM, _cancelar)
     try:
-        _reproducir(sys.stdin.read(), sys.argv[2])
+        texto = sys.stdin.read()
+        _reproducir(texto, str(modelo_para_texto(texto, sys.argv[2])))
     except (OSError, RuntimeError, ValueError, ImportError) as error:
         print(error, file=sys.stderr)
         raise SystemExit(1)

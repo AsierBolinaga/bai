@@ -17,7 +17,7 @@ def restaurar_registro():
 
 
 def test_motores_registrados_por_defecto():
-    assert set(registry.motores_registrados()) == {"openai", "llama_cpp", "gpt4all", "ollama"}
+    assert set(registry.motores_registrados()) == {"openai", "copilot", "llama_cpp", "gpt4all", "ollama"}
 
 
 def test_motor_desconocido():
@@ -25,7 +25,8 @@ def test_motor_desconocido():
         registry.obtener_motor("inexistente")
 
 
-@pytest.mark.parametrize("nombre,tipo", [("openai", "online"), ("llama_cpp", "offline"), ("gpt4all", "offline")])
+@pytest.mark.parametrize("nombre,tipo", [("openai", "online"), ("copilot", "online"),
+                                       ("llama_cpp", "offline"), ("gpt4all", "offline")])
 def test_motores_reales_se_importan_sin_librerias_pesadas(nombre, tipo):
     """Importar un motor no debe requerir openai/llama_cpp/gpt4all instalados."""
     modulo = registry.obtener_motor(nombre)

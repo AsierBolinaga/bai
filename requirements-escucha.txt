@@ -1,0 +1,4 @@
+# Optional offline microphone transcription (Whisper multilingual, CPU).
+faster-whisper>=1.2,<2
+sounddevice>=0.5,<1
+webrtcvad-wheels>=2.0.14,<3

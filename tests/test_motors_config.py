@@ -14,14 +14,26 @@ def escribir(tmp_path, datos):
 def test_config_real_del_proyecto_es_valida():
     cfg = mc.cargar_motors_config()
     assert cfg["modo_por_defecto"] == "offline"
-    assert cfg["online"]["prioridad"] == "local"
+    assert cfg["online"]["prioridad"] == "online"
     assert not cfg["offline"]["motores"]["gpt4all"].get("allow_download")
-    assert cfg["online"]["motor"] == "openai"
+    assert cfg["online"]["motor"] == "copilot"
     assert cfg["online"]["motores"]["openai"]["modelo"] == "gpt-4o"
     assert cfg["offline"]["motor"] == "llama_cpp"
-    assert cfg["offline"]["fallback"] == ["gpt4all"]
+    assert cfg["offline"]["fallback"] == []
     assert "llama_cpp" in cfg["offline"]["motores"]
     assert cfg["offline"]["motores"]["llama_cpp"]["model_path"].endswith(".gguf")
+    local = cfg["offline"]["motores"]["llama_cpp"]
+    assert local["descargar_al_arrancar"] is True and local["chat_format"] == "chatml"
+    assert local["stop"] == ["<|im_end|>"] and local["n_ctx"] == 4096
+
+
+@pytest.mark.parametrize("campo,valor", [("descargar_al_arrancar", "false"),
+                                        ("timeout", True), ("timeout", 0)])
+def test_opciones_de_preparacion_y_timeout_invalidas(tmp_path, campo, valor):
+    p = escribir(tmp_path, {"offline": {"motor": "llama_cpp", "motores": {
+        "llama_cpp": {campo: valor}}}})
+    with pytest.raises(mc.ConfigError, match=campo):
+        mc.cargar_motors_config(p)
 
 
 @pytest.mark.parametrize("campo", ["n_ctx", "max_tokens"])

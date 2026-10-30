@@ -48,6 +48,8 @@ def test_fachadas_no_dejan_guardia_instalada(monkeypatch):
     from core.network_guard import guardia_activa
     monkeypatch.setattr("core.motors.openai_engine.load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("core.motors.copilot_engine.disponible", lambda cfg: (False, "sin cuenta de prueba"))
+    monkeypatch.setattr("core.motors.llama_cpp_engine.disponible", lambda cfg: (False, "sin modelo de prueba"))
     ok, _ = responder_offline("hola")
     assert ok is False and not guardia_activa()
     ok, _ = responder_online(mensajes_basicos())
@@ -104,6 +106,7 @@ def test_responder_online_con_selector_por_defecto_no_queda_bloqueado(monkeypatc
     from core.network_guard import AccesoRedBloqueado, guardia_activa
     monkeypatch.setattr("core.motors.openai_engine.load_dotenv", lambda *a, **k: None)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr("core.motors.copilot_engine.disponible", lambda cfg: (True, ""))
     vistos = {}
 
     def conectividad(host, port=443, timeout=3):

@@ -31,7 +31,7 @@ def test_online_es_autorizacion_explicita_y_no_aisla(aislar_simulado):
     salidas = []
     cfg = arranque.preparar_arranque(["--online"], salida=salidas.append)
     assert cfg["modo_por_defecto"] == "online"
-    assert cfg["online"]["prioridad"] == "local"   # local sigue teniendo prioridad
+    assert cfg["online"]["prioridad"] == "online"
     assert aislar_simulado == [] and salidas == []
 
 

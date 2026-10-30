@@ -25,9 +25,10 @@ def analizar_argumentos(argv=None):
     parser = argparse.ArgumentParser(prog="bai.py", description="B.A.I — asistente personal modular")
     modo = parser.add_mutually_exclusive_group()
     modo.add_argument("--online", action="store_true",
-                      help="autoriza el uso de servicios online en esta sesión (los motores locales siguen teniendo prioridad)")
+                      help="autoriza el motor online configurado para esta sesión")
     modo.add_argument("--offline", action="store_true", help="fuerza el modo offline")
     parser.add_argument("--ui", action="store_true", help="abre la interfaz gráfica en lugar de la consola")
+    parser.add_argument("--sesion", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--aislamiento", choices=AISLAMIENTOS_VALIDOS, default=None,
                         help="nivel de aislamiento de red en modo offline (por defecto el de la configuración)")
     return parser.parse_args(argv)

@@ -2,7 +2,9 @@
 
 B.A.I. is a modular, private, and autonomous personal assistant. Its goal is to act as a natural, contextual, and extensible artificial intelligence system. B.A.I. operates offline by default, protecting the user's privacy, and offers online capabilities under explicit control. Its architecture enables the integration of multiple LLM engines, natural commands, personalized memory, and control over day-to-day tasks—both technical and personal.
 
-This README documents the architecture and structure of the B.A.I system, with a modular focus for language engines and a controlled fallback to OpenAI.
+This README documents the architecture and structure of B.A.I, with a lightweight
+local Qwen model and explicitly authorized GitHub Copilot chat. OpenAI remains
+available as an alternative adapter, not the current online default.
 
 ---
 
@@ -16,6 +18,7 @@ graph LR
     D --> S[model_selector.py]
     S --> R[motors/registry.py]
     R --> G[motors/openai_engine.py → OpenAI]
+    R --> CP[motors/copilot_engine.py → GitHub Copilot]
     R --> H[motors/llama_cpp_engine.py]
     R --> H2[motors/gpt4all_engine.py]
     S --> K[config/motors_config.yaml]
@@ -34,8 +37,8 @@ resolves the motor/model from `config/motors_config.yaml`:
 | Mode / policy                        | Candidate order                                                        |
 |--------------------------------------|------------------------------------------------------------------------|
 | `offline` (default)                  | `offline.motor` → `offline.fallback[...]` — local motors only          |
-| `online`, `prioridad: local` (default) | offline candidates → `online.motor` → `online.fallback[...]`          |
-| `online`, `prioridad: online`        | `online.motor` → `online.fallback[...]` → *(if `fallback_offline`)* offline candidates |
+| `online`, `prioridad: local` (optional) | offline candidates → `online.motor` → `online.fallback[...]`          |
+| `online`, `prioridad: online` (current configuration) | `online.motor` → `online.fallback[...]` → *(if `fallback_offline`)* offline candidates |
 
 **Mode policy**
 
@@ -43,13 +46,14 @@ resolves the motor/model from `config/motors_config.yaml`:
   level described in "Network isolation" below (kernel namespace by default).
 - B.A.I **never switches from offline to online on its own**. Online inference is
   only possible after explicit authorization: `python bai.py --online` at launch,
-  the command *"pasa a modo online"* (only when the session is not process-isolated),
+  the confirmed command *"pasa a modo online"* (restarting an isolated session),
   or `modo_por_defecto: online` set by the user. When no local motor can answer
   in offline mode, the assistant says so and explains how to authorize online use.
 - Online inference is considered necessary only when no local motor is available
   or able to answer (`prioridad: local`), or when the user asks for it in a single
-  turn with the prefix `online: <message>` (refused while in offline mode). Set
-  `prioridad: online` to prefer the cloud model whenever online mode is active.
+  turn with the prefix `online: <message>` (refused while in offline mode).
+  The current configuration uses `prioridad: online` and no automatic local
+  fallback: Online means Copilot, Offline means the local model.
 - Degrading from online to local never needs authorization (it is more private).
 
 For every candidate the selector checks, without loading anything: registered &
@@ -58,19 +62,19 @@ implemented → `disponible()` (library installed, model file present, API key s
 if a motor fails while generating, the next one is tried. If none can answer, the
 assistant explains why for each motor (`estado` command shows the same diagnosis).
 
-Motors never see credentials in config: the OpenAI key is read from the
-`OPENAI_API_KEY` environment variable (or `.env`).
+Credentials are not stored in the model YAML. Copilot uses the account
+authenticated through Copilot CLI; the alternative OpenAI adapter reads
+`OPENAI_API_KEY` from the environment (or `.env`).
 
-Every answer ends with a tag showing which backend produced it
-(`[llama_cpp · mistral-7b-instruct-v0.1.Q4_0.gguf · offline · fallback]`);
-disable with `mostrar_motor: false`. Switching mode also reports the motor that
-will be used.
+Answers hide the backend/model tag by default (`mostrar_motor: false`).
+Set `mostrar_motor: true` to append it for diagnostics. The `estado` command
+and mode-change messages still report the motor that will be used.
 
 ### Network isolation in offline mode (what is guaranteed, and by whom)
 
 | Level (`aislamiento_offline`) | Mechanism | Guarantee | Limits |
 |---|---|---|---|
-| `proceso` (default, Linux) | At startup in offline mode B.A.I moves itself into a private user+network namespace (`os.unshare`, no root, no extra binaries) and brings `lo` up. | **Kernel-enforced**: no external TCP/UDP/DNS/raw traffic for the process, its subprocesses and native libraries. Loopback (IPv4/IPv6, TCP/UDP) and UNIX sockets keep working. | Irreversible for the session: *"pasa a modo online"* is refused and explains to restart with `python bai.py --online`. Local services running *outside* the namespace (e.g. a system-wide Ollama on 127.0.0.1) are unreachable. Needs Python ≥ 3.12 and unprivileged user namespaces; otherwise B.A.I falls back to `python` and says so. |
+| `proceso` (default, Linux) | The session process enters a private user+network namespace (`os.unshare`, no root, no extra binaries) and brings `lo` up. | **Kernel-enforced**: no external TCP/UDP/DNS/raw traffic for the session, its subprocesses and native libraries. Loopback (IPv4/IPv6, TCP/UDP) and UNIX sockets keep working. | Irreversible for that process: the CLI/UI offers to save and restart when changing modes. A separate launcher outside the namespace starts the replacement; no conversations are processed in the launcher. Local services running *outside* the namespace are unreachable. Needs Python ≥ 3.12 and unprivileged user namespaces; otherwise B.A.I falls back to `python` and says so. |
 | `python` (fallback / `--aislamiento python`) | `core/network_guard.py` intercepts `socket.connect/connect_ex/sendto/sendmsg/send/sendall/sendfile`, the TLS writes `ssl.SSLSocket.send/sendall/write/sendfile/do_handshake` and the DNS functions `getaddrinfo/gethostbyname[_ex]/gethostbyaddr/getnameinfo`. Writes on sockets connected *before* activation are checked against `getpeername()`. Only loopback/UNIX destinations pass; active for the whole offline session and around every offline motor call, in every thread; blocked attempts are reported. | Covers Python code (http.client, urllib, requests, httpx, asyncio, ssl…). Allows switching to online in-session. | **Not** complete: subprocesses, native code opening sockets, direct `_socket` use, writes on the raw file descriptor (`os.write`/`os.sendfile`) and pre-saved references escape. It is process-global, so a concurrent "online" thread would also be blocked. |
 
 `estado` always shows the level actually in force with this wording, and
@@ -78,12 +82,16 @@ will be used.
 Independently of the level: offline mode never checks connectivity, never
 calls the online motor, and GPT4All always runs with `allow_download=False`
 (a `true` in the yaml is ignored with a warning).
+The one-time model download is a separate **network-enabled preparation stage**
+in the launcher, before the offline session exists. It downloads only the model,
+not conversation data. It does not imply authorization for online inference.
 
 ---
 
 ## ⚙️ Requirements
 
-- Python 3.10+
+- Python 3.10+ for the local assistant; Python 3.11+ for the optional Copilot SDK
+  and Python 3.12+ for Linux process isolation
 - pip
 - Dependencies:
   - `llama-cpp-python`
@@ -103,6 +111,64 @@ python bai.py --aislamiento python # offline with the Python guard (allows switc
 python bai.py --ui                 # tkinter chat window instead of the console
 ```
 
+### Lightweight local model and Copilot
+
+The current local model is **Qwen2.5-1.5B-Instruct Q4_K_M**, approximately
+1.12 GB on disk, with `chatml` formatting and a 4,096-unit context budget.
+On a local-mode launch, the supervisor:
+
+1. Checks the configured model. If absent, downloads it from the official
+   [Qwen GGUF repository](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)
+   at a pinned revision, with console progress.
+2. Verifies its exact size and SHA256, then atomically installs the file.
+   Partial downloads are removed on failure; an existing corrupt model is
+   reported, not silently overwritten. A failed preparation stops startup
+   without switching to the cloud.
+3. Starts the isolated session and loads the model once, reusing it for replies.
+   Subsequent launches verify the local file without downloading it again.
+
+The download requires internet. Once installed, the local model works without
+it. To use a different local model, disable `descargar_al_arrancar` and configure
+its file, chat format and stop markers together. No automatic download occurs
+inside an offline engine. The model's license is Apache-2.0; see its source
+repository for the license and model card.
+
+For **Online via your Copilot subscription**:
+
+```bash
+venv/bin/python -m pip install -r requirements-copilot.txt
+# Install GitHub Copilot CLI separately if it is not already available:
+# https://docs.github.com/copilot/how-tos/copilot-cli
+copilot login
+./bai.sh --ui --online
+```
+
+Authenticate with the GitHub account that has Copilot access. This does not
+reuse the VS Code conversation or copy its credentials. Availability, model
+access and usage limits depend on your Copilot plan. Without a configured
+`modelo`, the service selects its default model. Authentication failures are
+shown on the first request with instructions to run `copilot login`; they are
+not replaced by a fabricated or local reply.
+
+The adapter uses the pinned Python SDK and installed CLI with an empty
+working/config directory, no tools, a deny-all permission
+handler, and discovery, file hooks, skills, local SDK memory and host Git
+operations disabled. The SDK's `copilot-cli` mode supports the system-keychain
+login; `empty` mode intentionally disables that keychain, so it is not used.
+The restrictive session options are set explicitly instead. CLI authentication
+storage is reused, not read or copied by B.A.I; the CLI still manages its own
+authentication, state and logs. Do not treat this as a network sandbox for Copilot itself: the online
+runtime needs network access and the service's own data policies apply.
+The selected chat context (including memory and history) is sent only for
+authorized online generation. Copilot's `max_tokens` setting is a local input
+budget reserve, **not an enforced output cap**: this SDK does not expose one.
+
+With `aislamiento_offline: proceso`, the Online/Offline buttons and exact text
+mode commands ask for confirmation, save history, and restart through the
+supervisor. A failed save prevents restart. Returning offline starts a fresh
+process so the kernel isolation can be reapplied. On hosts that disallow user
+namespaces, the existing explicit Python-guard fallback and warning still apply.
+
 **Chat window (`--ui`)** — a tkinter window: conversation area, input
 box, a short description of B.A.I and buttons for *Offline*, *Online*,
 *Estado*, *Limpiar* and *Ayuda*. *Estado* displays the current mode and engine
@@ -110,6 +176,7 @@ availability in the chat. *Ayuda* displays a local guide to conversation, modes,
 privacy, engines, persistent memory and session history, including how to switch
 between offline and online and the limits imposed by process isolation.
 Both the header description and the guide expand B.A.I as Boli Artificial Intelligence.
+The user is displayed as **Boli** in the chat and greeted by that name in both interfaces.
 The same guide is
 available by typing `ayuda`, `cómo funcionas` or `explícame cómo funcionas`
 in the window or console, even without any available engine.
@@ -118,14 +185,19 @@ resizable input field with a focus indicator. A small blue sphere above the
 input pulses while a request is processed and while its answer is read aloud,
 with separate preparing/speaking labels. Its pulse is decorative, not an audio
 waveform or measured progress.
-**Phase 9 — Voice system: in progress (local speech output implemented).**
-The **Voz: OFF / Voz: ON** button toggles optional local Spanish speech, off at
-startup. It uses **Piper** with the **es_ES-davefx-medium** neural voice (Spanish,
-Spain), not a film voice clone. Speech runs on CPU and streams to `aplay`
+**Phase 9 — Voice system: in progress (local speech output and microphone transcription implemented; real-use validation pending).**
+The **Voz: OFF / Voz: ON** button toggles local speech, off at startup.
+Missing dependencies are reported when enabling speech.
+It uses **Piper** with automatic voice routing by the language of B.A.I's
+response, not a film voice clone. Speech runs on CPU and streams to `aplay`
 (Linux package `alsa-utils`), without persistent audio files.
 No online TTS or automatic model downloads are used at runtime. Mute, a new
 message or closing the window stops synthesis and playback. Missing dependencies and audio
 errors are shown in the chat; an available audio device is required.
+Playback starts with three seconds of PCM silence so the audio output can wake
+up before the first words. This adds a startup delay to each reading; the
+generated speech is preserved unchanged and cancellation remains available
+during that silence.
 
 Optional voice setup (installation/download require internet; normal use does not):
 
@@ -133,60 +205,90 @@ Optional voice setup (installation/download require internet; normal use does no
 venv/bin/python -m pip install -r requirements-voz.txt
 mkdir -p models/voz
 venv/bin/python -m piper.download_voices --download-dir models/voz es_ES-davefx-medium
+venv/bin/python -m piper.download_voices --download-dir models/voz/eu_ES-antton-medium eu_ES-antton-medium
+venv/bin/python -m piper.download_voices --download-dir models/voz/en_GB-northern_english_male-medium en_GB-northern_english_male-medium
 ```
 
-The `.onnx` and `.onnx.json` files must both be present in `models/voz/`.
-The dropdown below the chat input lists installed Piper models in that folder
-(including subfolders), plus the externally configured voice, when complete.
-Open it to refresh the list, select a voice to switch without restarting, and
-click **Probar voz** to hear a sample without enabling automatic reading.
-Switching stops current speech. Selection is session-only; the environment
-variable below sets the startup voice. No voices are downloaded by the selector.
-With only one installed model, only one option appears: install another licensed
-Piper model and its matching JSON to compare voices.
-Additional male voices tested locally: `es_ES-carlfm-x_low` (Spanish, public-domain
-dataset), `en_GB-northern_english_male-medium` (English, CC-BY-SA 4.0 dataset),
-and `eu_ES-antton-medium` (Basque, CC-BY 4.0 dataset).
-An additional female Basque voice, `eu_ES-maider-medium` (CC-BY 4.0 dataset),
-is also tested locally. Their upstream model cards
-are kept alongside the locally downloaded files. These are separate monolingual
-voices, not one multilingual speaker or a JARVIS clone. Select the appropriate
-voice manually for each language; there is no automatic language detection.
-The sample button uses English/Basque for standard `en_`/`eu_` model filenames,
-and Spanish otherwise. Renaming a model can change that sample selection.
+The matching `.onnx` and `.onnx.json` pairs must be installed at the locations
+above. Only these three voices are retained locally (not bundled in Git):
 
-The local comparison collection contains 20 model options (not bundled in Git):
-
-| Language | Installed model identifiers |
+| Detected response language | Voice |
 |---|---|
-| Spanish, Spain | `es_ES-davefx-medium`, `es_ES-carlfm-x_low`, `es_ES-mls_10246-low`, `es_ES-mls_9972-low` |
-| Spanish, Argentina / Mexico | `es_AR-daniela-high`, `es_MX-ald-medium`, `es_MX-claude-high` |
-| Basque | `eu_ES-antton-medium`, `eu_ES-maider-medium` |
-| British English | `en_GB-northern_english_male-medium`, `en_GB-alba-medium`, `en_GB-cori-high`, `en_GB-southern_english_female-low` |
-| US English | `en_US-bryce-medium`, `en_US-joe-medium`, `en_US-john-medium`, `en_US-kristin-medium`, `en_US-hfc_female-medium`, `en_US-hfc_male-medium`, `en_US-ryan-high` |
+| Spanish | Davefx (`es_ES-davefx-medium`) |
+| Basque | Antton (`eu_ES-antton-medium`) |
+| All other languages | Northern English Male (`en_GB-northern_english_male-medium`) |
 
-**Non-commercial restriction:** the HFC female/male and Ryan dataset cards specify
-CC BY-NC-SA 4.0. Do not use those voices commercially without the necessary
-permission. Other cards specify public domain/CC0, CC BY, CC BY-SA, Unlicense
-or Apache-2.0; preserve attribution and any applicable share-alike requirements.
-Each newly downloaded model includes its upstream `MODEL_CARD` locally.
-More options do not guarantee higher perceived quality: compare with **Probar voz**.
+Language detection uses the offline `langid` package plus common short greetings,
+inside the cancellable voice subprocess, not the Tk thread. Short, ambiguous or
+mixed-language responses can be misclassified; a single voice reads the whole
+response. No text is sent online for detection. Other languages are not translated:
+the English voice's pronunciation of them can be poor.
 
-To select another installed Piper voice, set `BAI_VOZ_MODELO` to its `.onnx`
-path before launching B.A.I. Paths containing spaces are supported:
-
-```bash
-BAI_VOZ_MODELO="/path/to/voice.onnx" ./bai.sh --ui
-```
+There is no manual dropdown, sample-playback button or `BAI_VOZ_MODELO` override. All three models
+and the detector are required; missing files/dependencies produce an explicit
+notice instead of silently choosing another voice. Preserve the local model
+cards: Davefx's dataset is CC0, Antton's CC BY 4.0, and Northern English Male's
+CC BY-SA 4.0.
 
 [Piper](https://github.com/OHF-Voice/piper1-gpl) is GPL-3.0-or-later.
 The [davefx model card](https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_ES/davefx/medium/MODEL_CARD)
 lists its dataset as CC0; review the model card/license of each replacement voice.
 The selected model is local and ignored by Git. Voice quality and preference
-depend on the selected model and personal preference. The current implementation
-covers speech output only. Microphone input and speech recognition are not
-implemented; hands-free hotword activation remains a later roadmap item.
+depend on the selected model and personal preference.
 Voice cloning is not implemented.
+
+### Local microphone listening (window)
+
+**Escucha: OFF / ON**, below **Voz**, enables continuous local microphone capture.
+Both toggles start **OFF** and are independent. After speech is detected, **five
+seconds of silence** end the utterance and its transcription is sent automatically.
+Initial silence never sends a message. Transcription and response generation take
+additional time. The microphone is closed during transcription, while B.A.I is
+responding and during speech playback; it resumes afterwards. Speech during these
+pauses is not captured. Turning listening off, sending text manually, changing the
+microphone language or closing the window cancels/discards pending capture.
+
+The microphone language selector offers **Automático**, **Castellano**, **Euskera**
+and **Inglés**, independently of the automatic output voices. Prefer **Euskera**
+when speaking Basque: automatic detection can mistake it for Spanish. Whisper
+transcribes rather than translates. Short phrases, background noise and accents
+can cause mistakes, including incorrect words; multilingual support is not an
+accuracy guarantee.
+
+One-time setup **before launching the isolated offline session**:
+
+```bash
+venv/bin/python -m pip install -r requirements-escucha.txt
+venv/bin/python -m core.escucha --preparar
+```
+
+PortAudio is required (`libportaudio2` on Ubuntu), with a working default input
+device configured in the operating system. Setup downloads the MIT-licensed
+`Systran/faster-whisper-small` model, pinned to revision
+`536b0662742c02347bc0e980a01041f333bce120`, into the Git-ignored
+`models/escucha/whisper-small` directory (about 465 MiB). Runtime uses local files
+only, CPU/int8 inference, `sounddevice` capture and WebRTC VAD. It neither downloads
+models nor uses a cloud speech service. Recognition runs in a cancellable child
+process, not the Tk thread; the model is loaded per utterance to release resources
+while the chat engine responds.
+
+Audio stays in memory and is not saved. **Recognized text becomes an ordinary chat
+message and follows the same history and online/offline policies**; in online mode
+the text goes to the online chat engine, not the recording. The listening status
+shows capture/transcription/pauses. Missing dependencies/models, device errors,
+audio overflows and empty transcriptions explicitly disable listening with an
+explanation; retry by enabling it again. Capture is bounded to 90 seconds per
+utterance; exceeding this stops listening with an error rather than sending a
+partial phrase. There is **no hotword**: when enabled, surrounding speech may be
+sent automatically. Turn listening off when not using it.
+
+Ubuntu validation: the default microphone opened successfully and cancellation
+terminated its capture process. Synthetic Piper speech passed through the real
+VAD and Whisper pipeline in Spanish, Basque and English with no Python network
+attempts. Recognition was imperfect, especially in Basque; automatic detection
+misidentified the Basque samples, hence the explicit microphone-language selector.
+These checks do **not** replace a real spoken conversation with the user's
+microphone, room noise and accent; that acceptance check remains pending.
 
 It uses the same `ask()` as the console, so memory
 requests, mode commands, offline guarantees and history behave identically; the
@@ -216,11 +318,9 @@ This script:
 - Installs `requirements.txt`
 - Launches `bai.sh` (CLI interface)
 
-It does **not** download a model: the download block for
-`models/mistral-7b-instruct-v0.1.Q4_0.gguf` is present but commented out in
-`setup_bai.sh`. Place a GGUF file in `models/` yourself (the URL is in the
-script) or point `offline.motores.<motor>.model_path` to an existing file, then
-check it with `python -m core.diagnostico`. `bai.sh` passes its arguments to
+The launcher now prepares the configured lightweight model automatically on a
+local-mode launch, before isolation, as described above. Copilot's SDK and CLI
+authentication are optional separate setup steps. `bai.sh` passes its arguments to
 `bai.py` (e.g. `./bai.sh --online`). The CLI can be started from any working
 directory: configuration, history and memory paths are resolved from the
 project root.
@@ -230,7 +330,7 @@ project root.
 ## ✨ Useful commands (text mode)
 
 - `Pasa a modo offline` / `Switch to offline mode`: local engines only (external connections blocked)
-- `Pasa a modo online` / `Switch to online mode`: authorizes the online engine (local still preferred)
+- `Pasa a modo online` / `Switch to online mode`: offers to save and restart with Copilot (current process-isolation configuration)
 - `online: <message>`: use the online engine for this message only (requires online mode)
 - `estado`: shows current mode, policy and which motors/models are available (and why not)
 
@@ -334,6 +434,7 @@ core/
 │   ├── base.py          # Motor contract (disponible / responder), MotorError, helpers
 │   ├── registry.py      # name -> module registry
 │   ├── openai_engine.py
+│   ├── copilot_engine.py # Copilot CLI account, chat without tools
 │   ├── llama_cpp_engine.py
 │   ├── gpt4all_engine.py
 │   └── ollama_engine.py # TODO (detected as "not implemented" by the registry)
@@ -388,7 +489,11 @@ and selected purely through configuration) and checks that `llama_cpp` and
 
 ---
 
-## 📋 Example `motors_config.yaml` configuration
+## 📋 Alternative OpenAI/Mistral configuration
+
+This is an alternative example, not the shipped Qwen/Copilot configuration in
+`config/motors_config.yaml`. It disables automatic preparation by omitting
+`descargar_al_arrancar`; place its GGUF file manually before using it.
 
 ```yaml
 modo_por_defecto: offline         # offline | online
@@ -463,9 +568,9 @@ python -m core.diagnostico --modo online --probar  # online check (needs OPENAI_
 Checklist for running the local model for real:
 
 1. `pip install llama-cpp-python` (needs a C/C++ compiler + cmake, or a prebuilt wheel) and/or `pip install gpt4all`
-2. Download the GGUF file to `models/` (see the URL in `setup_bai.sh`, ~4.1 GiB for Q4_0); relative paths resolve from the project root
+2. With the shipped configuration, run `./bai.sh` to prepare Qwen automatically (~1.12 GB); for a custom model, place its GGUF file in `models/` and adjust the configuration. Relative paths resolve from the project root
 3. Run `python -m core.diagnostico` – it validates the GGUF header (detects truncated downloads / HTML error pages saved as `.gguf`)
-4. Keep `chat_format: llama-2` for Mistral-Instruct: llama-cpp-python's `mistral-instruct` format drops system messages (B.A.I's identity and memory)
+4. Match the chat format to the model: the shipped Qwen uses `chatml` and `<|im_end|>` as its stop marker. If configuring the older Mistral-Instruct alternative, use `llama-2`, not `mistral-instruct` (the latter drops system messages)
 
 ---
 
@@ -479,7 +584,7 @@ pytest
 The suite covers configuration loading, the motor registry, the selection and
 fallback logic for both modes, the `ai_engine` commands, memory side effects on
 failed turns, the three motor adapters and the diagnostics tool. External
-libraries (`openai`, `llama_cpp`, `gpt4all`) and the network are simulated, so no
+libraries (`openai`, `copilot`, `llama_cpp`, `gpt4all`) and the network are simulated, so no
 model files, credentials or connection are needed.
 
 `tests/test_real_models.py` additionally exercises the **real** llama.cpp and
@@ -570,9 +675,63 @@ backend (online or offline):
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
 8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command, local help and animated activity sphere, `python bai.py --ui`; window tests use a virtual display, real-namespace validation remains limited by the host)
-9. **Voice system** – in progress (optional local Piper speech output, installed-voice selector, sample playback, mute/cancellation and speaking animation implemented; microphone input and speech recognition not implemented; responsive deferred UI closing and immediate history-reset persistence implemented; hotword activation remains a later roadmap item, voice cloning not implemented)
-10. **Cross-platform compatibility**  
-11. **Full synchronization across devices** ✨ → version 1.0.0 reached
+9. **Voice system** – in progress (local Piper speech output, automatic response-language routing across three voices, mute/cancellation and speaking animation implemented; speech starts disabled, without a manual output-voice selector or sample button; local multilingual Whisper microphone transcription with continuous listening, five-second silence, language selector and response/playback pauses implemented; real microphone conversation validation pending; responsive deferred UI closing and immediate history-reset persistence implemented; hotword activation remains a later roadmap item, voice cloning not implemented)
+10. **Cross-platform compatibility** – pending (Windows/macOS support not yet implemented or validated)
+11. **Full synchronization across devices** – pending ✨ → version 1.0.0 reached
+
+### Current priority: validation and stabilization
+
+New roadmap phases are paused until all preceding phases work correctly.
+The “completed” labels above record implementation milestones, not blanket
+confirmation that every feature has been validated in real use.
+Before starting phase 10, review phases 1–9, validate microphone input
+and speech recognition in phase 9, fix any defects found, and verify
+the end-to-end flows on the current Ubuntu setup with real local models,
+the UI and audio. Validate the authorized online flow separately with explicit
+user authorization. Automated tests with simulated backends and a virtual
+display remain useful regression checks, but do not replace these real-use
+checks; record their outcomes and any remaining limitations before advancing.
+
+Initial validation checkpoint on Ubuntu (2026-10-30, before lightweight startup integration):
+
+- 121 focused tests passed for context budgets, adapters, the UI controller,
+  deferred closing and voice. Tk tests used a virtual display and controlled
+  backends; they do not establish real-inference cancellation.
+- A synthetic 500-turn context stress check kept all 1,000 original conversation
+  messages intact and respected the 2,048-unit window with a 256-unit answer
+  reserve. Old turns were omitted in 497 requests. At that window size, a
+  separate 1,800-byte memory sample plus a short question was explicitly rejected
+  rather than silently truncated. These are estimator checks, not LLM responses.
+- Real local Piper synthesis produced nonempty PCM with the installed Spanish
+  `es_ES-davefx-medium`, Basque `eu_ES-antton-medium` and English
+  `en_US-bryce-medium` voices. Default-voice playback completed without an error;
+  cancelling a long reading took about 0.064 seconds and left neither its worker
+  nor the observed audio-player child running. The user confirmed hearing the
+  voice and its interruption.
+- Still pending: long conversations with a real local LLM, visual verification
+  of closing during that inference, and the remaining phase-by-phase real-use
+  checks. No local `.gguf` model was installed for this checkpoint. Closing still
+  waits for inference to return; it does not cancel it.
+
+Lightweight startup and Copilot integration checkpoint (2026-10-30):
+
+- The pinned Qwen GGUF was downloaded and its size and SHA256 verified.
+  A real synthetic local prompt completed under the Python network guard with
+  no observed Python network attempts: about 1.32 seconds to load and 2.43 seconds
+  to answer. These are individual observations, not guaranteed performance.
+- The user completed official Copilot CLI browser login. The chat adapter
+  returned a real response to a synthetic prompt with no tools enabled.
+  Personal history and memory were not used for these online smoke checks.
+- A real launcher/CLI check performed local inference, saved a synthetic
+  two-message history, restarted online and then offline, and retained that
+  history unchanged. UI confirmation/cancel and failed-save restart prevention
+  were checked with a virtual display and controlled backends.
+- The isolated regression suite passed **1,141 tests**, with **18 skips** for
+  namespace restrictions and optional tiny-GGUF test dependencies.
+- **Kernel isolation is still unavailable on this host because of AppArmor.**
+  The existing startup warning and Python-guard fallback remain in force;
+  this checkpoint does not certify kernel isolation, real-model UI closing,
+  long real-model conversations or the remaining phase-by-phase checks.
 
 ---
 
@@ -617,7 +776,7 @@ Once all roadmap phases are complete, B.A.I. will keep evolving with structural 
 
 ### 📌 Version 1.3.0 – Local listening mode
 - Hotword activation ("B.A.I.")
-- Offline speech recognition (Whisper, Vosk)
+- Advanced listening beyond the current manually enabled offline Whisper microphone
 
 ### 📌 Version 1.4.0 – Mobile app / Car Launcher integration
 - Connection with Android head unit and Car Launcher Pro

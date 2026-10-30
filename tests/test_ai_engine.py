@@ -295,9 +295,9 @@ def test_etiqueta_desactivable(entorno):
     assert ai.ask("hola", []) == "respuesta de on_a"
 
 
-def test_config_real_muestra_motor_por_defecto():
+def test_config_real_oculta_motor_por_defecto():
     from config.motors_config import cargar_motors_config
-    assert cargar_motors_config()["mostrar_motor"] is True
+    assert cargar_motors_config()["mostrar_motor"] is False
 
 
 def test_cambio_de_modo_informa_del_motor_activo(entorno):

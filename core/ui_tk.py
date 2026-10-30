@@ -10,14 +10,17 @@ import threading
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
+from tkinter import messagebox
 
 from core.config import nombre_ia, master_name
 from core.ayuda import DESCRIPCION_BAI
 from core.ui_controlador import ControladorChat
 from core.voz import VozLocal
+from core.escucha import EscuchaLocal
 
 INTERVALO_COLA_MS = 100
 ANCHO_BARRA_ESTRECHA = 640
+IDIOMAS_ESCUCHA = {"Automático": None, "Castellano": "es", "Euskera": "eu", "Inglés": "en"}
 
 # Paleta oscura inspirada en VS Code.
 COLORES = {
@@ -130,7 +133,7 @@ class EsferaActividad(tk.Canvas):
 
 
 class VentanaBai:
-    def __init__(self, controlador=None, raiz=None, voz=None):
+    def __init__(self, controlador=None, raiz=None, voz=None, escucha=None):
         self.controlador = controlador or ControladorChat()
         self.raiz = raiz or tk.Tk()
         self._cola = queue.Queue()
@@ -138,9 +141,14 @@ class VentanaBai:
         self._cerrando = False
         self._cerrada = False
         self._hilo_turno = None
+        self._reinicio = None
         self._voz = voz if voz is not None else VozLocal()
         self._voz_activada = False
         self._hablando = False
+        self._escucha = escucha if escucha is not None else EscuchaLocal()
+        self._escucha_activada = False
+        self._escucha_en_curso = False
+        self._turno_pendiente = False
         self._construir()
         self._mostrar(nombre_ia, f"Hola, {master_name}. Memoria de sesión cargada.")
         self.raiz.protocol("WM_DELETE_WINDOW", self.cerrar)
@@ -180,13 +188,27 @@ class VentanaBai:
         pie.columnconfigure(0, weight=1)
         self.esfera = EsferaActividad(pie)
         self.esfera.grid(row=0, column=0, sticky="w")
-        self.boton_voz = self._boton(pie, "Voz: OFF", self._alternar_voz, COLORES["boton"])
+        self.boton_voz = self._boton(pie, "Voz: ON" if self._voz_activada else "Voz: OFF",
+                                    self._alternar_voz, COLORES["boton"])
         self.boton_voz.grid(row=0, column=1, padx=(8, 0), pady=(0, 4))
+        self.boton_escucha = self._boton(pie, "Escucha: OFF", self._alternar_escucha, COLORES["boton"])
+        self.boton_escucha.grid(row=1, column=1, padx=(8, 0), pady=(0, 4))
+        fila_escucha = tk.Frame(pie, bg=COLORES["fondo"])
+        fila_escucha.grid(row=1, column=0, sticky="ew")
+        self.idioma_escucha = ttk.Combobox(
+            fila_escucha, values=list(IDIOMAS_ESCUCHA), state="readonly", width=10, style="Bai.TCombobox")
+        self.idioma_escucha.set("Automático")
+        self.idioma_escucha.pack(side="left", padx=(0, 6))
+        self.idioma_escucha.bind("<<ComboboxSelected>>", self._cambiar_idioma_escucha)
+        self.estado_escucha = tk.Label(
+            fila_escucha, text="Escucha OFF", width=1, anchor="w",
+            bg=COLORES["fondo"], fg=COLORES["texto_suave"], font=FUENTE_UI)
+        self.estado_escucha.pack(side="left", fill="x", expand=True)
         alto_entrada = tkfont.Font(font=FUENTE_UI).metrics("linespace") + 16
         self.marco_entrada = tk.Canvas(
             pie, bg=COLORES["fondo"], width=100, height=alto_entrada,
             highlightthickness=0, borderwidth=0, takefocus=0)
-        self.marco_entrada.grid(row=1, column=0, sticky="ew")
+        self.marco_entrada.grid(row=2, column=0, sticky="ew")
         self._borde_entrada = _rect_redondeado(
             self.marco_entrada, 2, 2, 98, alto_entrada - 2, 10,
             fill=COLORES["entrada"], outline=COLORES["borde"])
@@ -205,15 +227,7 @@ class VentanaBai:
             self._borde_entrada, outline=COLORES["borde"]))
         self.entrada.bind("<Return>", lambda _e: self.enviar())
         self.boton_enviar = self._boton(pie, "Enviar", self.enviar, COLORES["acento"])
-        self.boton_enviar.grid(row=1, column=1, padx=(8, 0), sticky="ns")
-        self.selector_voz = ttk.Combobox(
-            pie, state="readonly", width=1, style="Bai.TCombobox",
-            postcommand=self._cargar_voces)
-        self.selector_voz.grid(row=2, column=0, sticky="ew", pady=(2, 0))
-        self.selector_voz.bind("<<ComboboxSelected>>", self._seleccionar_voz)
-        self.boton_probar_voz = self._boton(pie, "Probar voz", self._probar_voz, COLORES["boton"])
-        self.boton_probar_voz.grid(row=2, column=1, padx=(8, 0), pady=(2, 0))
-        self._cargar_voces()
+        self.boton_enviar.grid(row=2, column=1, padx=(8, 0), sticky="ns")
 
         centro = tk.Frame(self.raiz, bg=COLORES["fondo"])
         centro.pack(fill="both", expand=True)
@@ -232,44 +246,6 @@ class VentanaBai:
 
     def _boton(self, padre, texto, comando, color):
         return BotonRedondo(padre, texto, comando, color)
-
-    def _cargar_voces(self):
-        try:
-            modelos = self._voz.modelos_instalados()
-        except OSError as error:
-            self.selector_voz.set(f"No se pueden listar las voces: {error}")
-            self.selector_voz.configure(values=())
-            self._modelos_voz = {}
-            return
-        nombres = [p.stem for p in modelos]
-        self._modelos_voz = {
-            p.stem if nombres.count(p.stem) == 1 else str(p): p for p in modelos
-        }
-        self.selector_voz.configure(values=tuple(self._modelos_voz))
-        seleccionado = next(
-            (nombre for nombre, ruta in self._modelos_voz.items() if ruta == self._voz.modelo),
-            "Sin voces instaladas")
-        self.selector_voz.set(seleccionado)
-
-    def _seleccionar_voz(self, _evento=None):
-        nombre = self.selector_voz.get()
-        try:
-            self._voz.seleccionar_modelo(self._modelos_voz[nombre])
-        except (OSError, ValueError, KeyError) as error:
-            self._mostrar("aviso", f"No se ha podido cambiar la voz: {error}", "aviso")
-        else:
-            self._hablando = False
-            self.esfera.activar(self.controlador.ocupado)
-        self._cargar_voces()
-
-    def _probar_voz(self):
-        if self._cerrando:
-            return
-        if self.controlador.ocupado:
-            self._mostrar("aviso", "Espera a que termine la respuesta para probar la voz.", "aviso")
-            return
-        self._detener_voz()
-        self._leer(self._voz.texto_prueba)
 
     def _ajustar_entrada(self, evento):
         temporal = _rect_redondeado(
@@ -290,12 +266,9 @@ class VentanaBai:
             bordercolor=COLORES["fondo"], arrowcolor=COLORES["texto"], lightcolor=COLORES["boton"],
             darkcolor=COLORES["boton"], gripcount=0)
         estilo.map("Bai.Vertical.TScrollbar", background=[("active", COLORES["hover"])])
-        estilo.configure("Bai.TCombobox", fieldbackground=COLORES["entrada"],
-                         background=COLORES["boton"], foreground=COLORES["texto_suave"])
-        estilo.map("Bai.TCombobox", fieldbackground=[("readonly", COLORES["entrada"])],
-                   foreground=[("readonly", COLORES["texto_suave"])],
-                   selectbackground=[("readonly", COLORES["seleccion"])],
-                   selectforeground=[("readonly", COLORES["texto"])])
+        estilo.map("Bai.TCombobox",
+                   fieldbackground=[("readonly", COLORES["entrada"])],
+                   foreground=[("readonly", COLORES["texto"])])
 
     def _reordenar_barra(self, evento):
         estrecha = evento.width < ANCHO_BARRA_ESTRECHA
@@ -321,25 +294,35 @@ class VentanaBai:
                 self.entrada.delete(0, "end")
         if not texto:
             return
+        self._pausar_escucha()
+        from core.reinicio import aviso_reinicio, modo_reinicio
+        modo = modo_reinicio(texto)
+        if modo is not None:
+            if messagebox.askyesno("Cambiar de modo", aviso_reinicio(modo), parent=self.raiz):
+                self._reinicio = modo
+                self.cerrar()
+            return
         if texto.lower() in ("salir", "exit", "quit", "irten", "atera", "amaitu"):
             self.cerrar()
             return
         self._detener_voz()
         self._mostrar(master_name, texto)
         self._bloquear(True)
+        self._turno_pendiente = True
         self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
 
     def cerrar(self):
         if self._cerrando:
             return
         self._cerrando = True
+        self._desactivar_escucha()
         self._detener_voz()
         self.esfera.activar(False)
         self.entrada.configure(state="disabled")
         self.boton_enviar.configure(state="disabled")
-        for boton in self.botones_barra + [self.boton_voz, self.boton_probar_voz]:
+        for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
             boton.configure(state="disabled")
-        self.selector_voz.configure(state="disabled")
+        self.idioma_escucha.configure(state="disabled")
         self._mostrar("aviso", "Cerrando: espero a que termine la operación y guardo el historial.", "aviso")
 
         # Esperar el cerrojo o el disco nunca debe bloquear el hilo de Tk.
@@ -358,6 +341,7 @@ class VentanaBai:
     def _al_destruir(self, evento):
         if evento.widget is self.raiz:
             self._cerrada = True
+            self._escucha.detener()
             self._voz.detener()
             self.raiz.after_cancel(self._temporizador_cola)
 
@@ -378,6 +362,7 @@ class VentanaBai:
         self._hablando = False
 
     def _leer(self, texto):
+        self._pausar_escucha()
         try:
             self._voz.hablar(texto)
         except (OSError, RuntimeError) as error:
@@ -385,6 +370,68 @@ class VentanaBai:
             return
         self._hablando = True
         self.esfera.activar(True, hablando=True)
+
+    def _alternar_escucha(self):
+        if self._cerrando:
+            return
+        if self._escucha_activada:
+            self._desactivar_escucha()
+        else:
+            self._escucha_activada = True
+            self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: ON")
+            self.estado_escucha.configure(text="Pausada")
+            self._actualizar_escucha()
+
+    def _cambiar_idioma_escucha(self, _evento=None):
+        if self._cerrando:
+            return
+        if self._escucha_en_curso:
+            self._mostrar("aviso", "Idioma del micrófono cambiado; se ha descartado la frase en curso.", "aviso")
+        self._pausar_escucha()
+        self._actualizar_escucha()
+
+    def _pausar_escucha(self):
+        self._escucha.detener()
+        self._escucha_en_curso = False
+        if self._escucha_activada:
+            self.estado_escucha.configure(text="Pausada")
+
+    def _desactivar_escucha(self):
+        self._escucha_activada = False
+        self._pausar_escucha()
+        self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: OFF")
+        self.estado_escucha.configure(text="Escucha OFF")
+
+    def _actualizar_escucha(self):
+        if not self._escucha_activada or self._cerrando:
+            return
+        if self.controlador.ocupado or self._turno_pendiente or self._hablando:
+            if self._escucha_en_curso:
+                self._pausar_escucha()
+            return
+        if not self._escucha_en_curso:
+            try:
+                self._escucha.iniciar(IDIOMAS_ESCUCHA[self.idioma_escucha.get()])
+            except (OSError, RuntimeError) as error:
+                self._desactivar_escucha()
+                self._mostrar("aviso", f"No se ha podido activar el micrófono: {error}", "aviso")
+                return
+            self._escucha_en_curso = True
+            self.estado_escucha.configure(text="Preparando micrófono…")
+        for tipo, texto in self._escucha.comprobar():
+            if tipo == "estado":
+                self.estado_escucha.configure(text=texto)
+            elif tipo == "error":
+                self._desactivar_escucha()
+                self._mostrar("aviso", texto, "aviso")
+                return
+            elif tipo == "texto":
+                self.enviar(texto)
+                return
+            elif tipo == "fin":
+                self._desactivar_escucha()
+                self._mostrar("aviso", "La escucha terminó sin una transcripción. Vuelve a activarla.", "aviso")
+                return
 
     def ejecutar(self):
         self.raiz.mainloop()
@@ -400,12 +447,13 @@ class VentanaBai:
                 self.raiz.destroy()
                 return
             self._cerrando = False
+            self._reinicio = None
             self._mostrar("aviso", "No he podido guardar el historial al cerrar"
                           + (f": {error}" if error else ". Revisa la consola.")
                           + " La ventana sigue abierta; puedes reintentar el cierre.", "aviso")
-            for boton in self.botones_barra + [self.boton_voz, self.boton_probar_voz]:
+            for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
                 boton.configure(state="normal")
-            self.selector_voz.configure(state="readonly")
+            self.idioma_escucha.configure(state="readonly")
             self._bloquear(self.controlador.ocupado)
         try:
             while True:
@@ -419,9 +467,11 @@ class VentanaBai:
                 self.esfera.activar(self.controlador.ocupado)
                 if error:
                     self._mostrar("aviso", error, "aviso")
+        self._actualizar_escucha()
         self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
 
     def _pintar_turno(self, turno):
+        self._turno_pendiente = False
         if turno.limpiado:
             self._borrar_chat()
         for aviso in turno.avisos:
@@ -461,4 +511,7 @@ def crear_raiz():
 
 
 def iniciar_ui(controlador=None, raiz=None):
-    VentanaBai(controlador, raiz).ejecutar()
+    from core.reinicio import codigo_modo
+    ventana = VentanaBai(controlador, raiz)
+    ventana.ejecutar()
+    return codigo_modo(ventana._reinicio) if ventana._reinicio is not None else 0

@@ -288,10 +288,10 @@ def test_selector_con_registro_real_y_config_del_proyecto(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("core.motors.openai_engine.load_dotenv", lambda *a, **k: None)
     sel = ModelSelector(comprobar_conexion=lambda host: False)
-    assert sel.modo == "offline" and sel.prioridad == "local"  # política por defecto del proyecto
+    assert sel.modo == "offline" and sel.prioridad == "online"
     estado = sel.estado("online")
-    # prioridad local: motores locales antes que el online
-    assert [c["motor"] for c in estado["candidatos"]] == ["llama_cpp", "gpt4all", "openai"]
+    # La configuración actual no usa fallback local al autorizar Copilot.
+    assert [c["motor"] for c in estado["candidatos"]] == ["copilot"]
     assert all(not c["disponible"] for c in estado["candidatos"])
     with pytest.raises(SinMotorDisponible):
         sel.responder(mensajes_basicos(), modo="online")

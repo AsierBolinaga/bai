@@ -18,6 +18,7 @@ from core.motors.base import MotorNoDisponible
 MOTORES = {
     # online
     "openai": "core.motors.openai_engine",
+    "copilot": "core.motors.copilot_engine",
     # offline
     "llama_cpp": "core.motors.llama_cpp_engine",
     "gpt4all": "core.motors.gpt4all_engine",

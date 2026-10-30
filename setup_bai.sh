@@ -17,17 +17,8 @@ echo "[B.A.I] Instalando dependencias..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Verificar y descargar modelo si no existe
-#MODEL_PATH="models/mistral-7b-instruct-v0.1.Q4_0.gguf"
-#MODEL_URL="https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF/resolve/main/mistral-7b-instruct-v0.1.Q4_0.gguf"
-
-#if [ ! -f "$MODEL_PATH" ]; then
-#    echo "[B.A.I] Descargando modelo Mistral Q4_0..."
-#    mkdir -p models
-#    wget -O "$MODEL_PATH" "$MODEL_URL"
-#else
-#    echo "[B.A.I] Modelo ya presente. No se descarga de nuevo."
-#fi
+# El lanzador prepara el modelo ligero antes de aislar la sesión offline.
+# Copilot es opcional: pip install -r requirements-copilot.txt y copilot login.
 
 # Lanzar B.A.I.
 echo "[B.A.I] Lanzando B.A.I..."

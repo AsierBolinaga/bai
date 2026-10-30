@@ -224,6 +224,25 @@ def ventana_tk(entorno):
         pass
 
 
+@pytest.mark.parametrize("disponible", [True, False])
+def test_voz_inicial_siempre_desactivada(ventana_tk, disponible):
+    from types import SimpleNamespace
+    from core.ui_tk import VentanaBai
+    lector = SimpleNamespace(
+        disponible=disponible, motivo_no_disponible="modelo ausente",
+        modelo=None, modelos_instalados=lambda: [], detener=lambda: None)
+    v = VentanaBai(ventana_tk.controlador, voz=lector)
+    try:
+        assert not v._voz_activada
+        assert v.boton_voz.itemcget(v.boton_voz._texto, "text") == "Voz: OFF"
+        assert "Voz local no disponible" not in _chat(v)
+        if not disponible:
+            v._alternar_voz()
+            assert "modelo ausente" in _chat(v)
+    finally:
+        v.raiz.destroy()
+
+
 def _esperar(ventana, condicion, segundos=5):
     limite = time.time() + segundos
     while time.time() < limite:
@@ -271,6 +290,39 @@ def test_ventana_cierra_guardando(ventana_tk, entorno):
     assert entorno.guardado()[-1]["content"] == "respuesta de off_a"
 
 
+@pytest.mark.parametrize("confirmar", [False, True])
+def test_cambio_online_ofrece_reinicio_guardando_sin_enviar_contexto(
+        ventana_tk, entorno, monkeypatch, confirmar):
+    import core.ui_tk as ui
+    v = ventana_tk
+    entorno.sel.config["aislamiento_offline"] = "proceso"
+    v.enviar("hola")
+    _esperar(v, lambda: len(v.controlador.historial) == 2 and not v.controlador.ocupado)
+    avisos = []
+    monkeypatch.setattr(ui.messagebox, "askyesno",
+                        lambda titulo, mensaje, **kw: avisos.append(mensaje) or confirmar)
+    v.enviar("pasa a modo online")
+    assert len(avisos) == 1 and "memoria" in avisos[0]
+    assert entorno.sel.modo == "offline"
+    assert entorno.fake.motores.todos["on_a"].llamadas == []
+    if confirmar:
+        _esperar(v, lambda: v._cerrada)
+        assert v._reinicio == "online" and len(entorno.guardado()) == 2
+    else:
+        assert not v._cerrando and v._reinicio is None
+
+
+def test_reinicio_se_anula_si_no_se_guarda(ventana_tk, entorno, monkeypatch):
+    import core.ui_tk as ui
+    v = ventana_tk
+    entorno.sel.config["aislamiento_offline"] = "proceso"
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *args, **kw: True)
+    v.controlador._guardar = lambda historial: False
+    v.enviar("pasa a modo online")
+    _esperar(v, lambda: not v._cerrando)
+    assert not v._cerrada and v._reinicio is None and entorno.sel.modo == "offline"
+
+
 def test_boton_ayuda_y_peticion_escrita_muestran_la_misma_guia(ventana_tk):
     from core.ayuda import AYUDA_BAI, DESCRIPCION_BAI
     v = ventana_tk
@@ -307,7 +359,10 @@ def test_ventana_es_responsive_y_mantiene_la_entrada_visible(ventana_tk):
         assert v.entrada.winfo_y() + v.entrada.winfo_height() <= v.raiz.winfo_height()
         assert v.chat.winfo_width() > 100
         assert v.chat.winfo_ismapped() and v.chat.winfo_height() > 20
-        assert v.boton_probar_voz.winfo_rooty() + v.boton_probar_voz.winfo_height() <= (
+        assert v.boton_voz.winfo_rooty() + v.boton_voz.winfo_height() <= (
+            v.raiz.winfo_rooty() + v.raiz.winfo_height())
+        assert v.boton_escucha.winfo_rooty() >= v.boton_voz.winfo_rooty() + v.boton_voz.winfo_height()
+        assert v.boton_escucha.winfo_rooty() + v.boton_escucha.winfo_height() <= (
             v.raiz.winfo_rooty() + v.raiz.winfo_height())
         for boton in v.botones_barra:
             assert boton.winfo_rootx() >= v.raiz.winfo_rootx()
@@ -406,7 +461,6 @@ def test_esfera_cancela_animacion_al_destruir(ventana_tk):
 def voz_fake(ventana_tk):
     class Voz:
         disponible = True
-        texto_prueba = "Hola, Boli. Así suena esta voz."
         motivo_no_disponible = "Instala Piper para activarla."
         activo = False
         error = None
@@ -526,39 +580,136 @@ def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
     assert not v._hablando and v.esfera._temporizador is None
 
 
-def test_selector_cambia_voz_y_prueba_sin_activar_lectura(ventana_tk, voz_fake, tmp_path):
+def test_sin_selector_ni_boton_de_prueba(ventana_tk):
     v = ventana_tk
-    primera, segunda = tmp_path / "primera.onnx", tmp_path / "segunda.onnx"
-    voz_fake.modelo = primera
-    voz_fake.modelos_instalados = lambda: [primera, segunda]
-
-    def seleccionar(ruta):
-        voz_fake.detener()
-        voz_fake.modelo = ruta
-
-    voz_fake.seleccionar_modelo = seleccionar
-    v._cargar_voces()
-    assert v.selector_voz.get() == "primera"
-    v.selector_voz.set("segunda")
-    v._seleccionar_voz()
-    assert voz_fake.modelo == segunda
-    v._probar_voz()
-    assert v._hablando and not v._voz_activada
-    assert "Así suena esta voz" in voz_fake.textos[-1]
-    v.selector_voz.set("primera")
-    v._seleccionar_voz()
-    assert not v._hablando and not voz_fake.activo
+    assert not hasattr(v, "selector_voz")
+    assert not hasattr(v, "boton_probar_voz")
+    assert not hasattr(v, "_probar_voz")
+    assert not v._voz_activada
 
 
-def test_selector_informa_si_modelo_desaparece(ventana_tk, voz_fake, tmp_path):
+@pytest.fixture
+def escucha_fake(ventana_tk):
+    class Escucha:
+        activa = False
+        inicios = 0
+        eventos = []
+        error = None
+
+        def iniciar(self, idioma=None):
+            if self.error:
+                raise RuntimeError(self.error)
+            self.activa = True
+            self.inicios += 1
+            self.idioma = idioma
+
+        def detener(self):
+            self.activa = False
+            self.eventos = []
+
+        def comprobar(self):
+            eventos, self.eventos = self.eventos, []
+            return eventos
+
+    micro = Escucha()
+    ventana_tk._escucha = micro
+    return micro
+
+
+def test_escucha_arranca_off_y_toggle_controla_microfono(ventana_tk, escucha_fake):
     v = ventana_tk
-    voz_fake.modelo = tmp_path / "ausente.onnx"
-    voz_fake.modelos_instalados = lambda: [voz_fake.modelo]
+    assert not v._escucha_activada and escucha_fake.inicios == 0
+    assert v.boton_escucha.itemcget(v.boton_escucha._texto, "text") == "Escucha: OFF"
+    v._alternar_escucha()
+    assert v._escucha_activada and escucha_fake.activa
+    escucha_fake.eventos = [("estado", "Escuchando")]
+    v._actualizar_escucha()
+    assert v.estado_escucha.cget("text") == "Escuchando"
+    v._alternar_escucha()
+    assert not v._escucha_activada and not escucha_fake.activa
+    v._actualizar_escucha()
+    assert escucha_fake.inicios == 1
 
-    def fallar(ruta):
-        raise ValueError("modelo borrado")
 
-    voz_fake.seleccionar_modelo = fallar
-    v._cargar_voces()
-    v._seleccionar_voz()
-    assert "modelo borrado" in _chat(v)
+def test_escucha_envia_una_frase_y_pausa_hasta_terminar_voz(ventana_tk, escucha_fake, voz_fake):
+    v = ventana_tk
+    v._alternar_voz()
+    v._alternar_escucha()
+    escucha_fake.eventos = [("texto", "hola"), ("fin", "")]
+    v._actualizar_escucha()
+    assert "Boli: hola" in _chat(v)
+    assert not escucha_fake.activa and v._escucha_activada
+    _esperar(v, lambda: v._hablando)
+    assert not escucha_fake.activa
+    assert escucha_fake.inicios == 1
+    voz_fake.activo = False
+    _esperar(v, lambda: escucha_fake.inicios == 2)
+    assert escucha_fake.activa
+    assert _chat(v).count("Boli: hola") == 1
+
+
+def test_escucha_sin_tts_se_reanuda_tras_respuesta(ventana_tk, escucha_fake):
+    v = ventana_tk
+    v._alternar_escucha()
+    escucha_fake.eventos = [("texto", "hola")]
+    v._actualizar_escucha()
+    _esperar(v, lambda: escucha_fake.inicios == 2)
+    assert not v._hablando and escucha_fake.activa
+
+
+def test_envio_manual_descarta_audio_pendiente(ventana_tk, escucha_fake):
+    v = ventana_tk
+    v._alternar_escucha()
+    escucha_fake.eventos = [("texto", "audio antiguo")]
+    v.enviar("estado")
+    assert not escucha_fake.activa and escucha_fake.eventos == []
+    _esperar(v, lambda: escucha_fake.inicios == 2)
+    assert "audio antiguo" not in _chat(v)
+
+
+@pytest.mark.parametrize("tipo", ["inicio", "error", "fin"])
+def test_error_de_escucha_desactiva_sin_reintentos_infinitos(ventana_tk, escucha_fake, tipo):
+    v = ventana_tk
+    if tipo == "inicio":
+        escucha_fake.error = "sin micrófono"
+    v._alternar_escucha()
+    if tipo != "inicio":
+        escucha_fake.eventos = [(tipo, "sin micrófono")]
+        v._actualizar_escucha()
+    assert not v._escucha_activada and not escucha_fake.activa
+    assert "sin micrófono" in _chat(v) or "sin una transcripción" in _chat(v)
+    inicios = escucha_fake.inicios
+    v._actualizar_escucha()
+    assert escucha_fake.inicios == inicios
+
+
+def test_cierre_y_destruccion_detienen_microfono(ventana_tk, escucha_fake):
+    v = ventana_tk
+    v._alternar_escucha()
+    assert escucha_fake.activa
+    v.cerrar()
+    assert not escucha_fake.activa and not v._escucha_activada
+    _esperar(v, lambda: v._cerrada)
+
+
+def test_activar_escucha_durante_voz_espera_a_que_termine(ventana_tk, escucha_fake, voz_fake):
+    v = ventana_tk
+    v._alternar_voz()
+    v._leer("Hola")
+    v._alternar_escucha()
+    assert v._escucha_activada and not escucha_fake.activa
+    voz_fake.activo = False
+    _esperar(v, lambda: escucha_fake.activa)
+
+
+def test_idioma_de_microfono_no_cambia_voces_y_descarta_frase_anterior(ventana_tk, escucha_fake):
+    v = ventana_tk
+    v._alternar_escucha()
+    assert escucha_fake.idioma is None
+    escucha_fake.eventos = [("texto", "frase antigua")]
+    v.idioma_escucha.set("Euskera")
+    v._cambiar_idioma_escucha()
+    assert escucha_fake.idioma == "eu" and escucha_fake.inicios == 2
+    assert escucha_fake.eventos == []
+    assert "se ha descartado la frase en curso" in _chat(v)
+    assert not v._voz_activada

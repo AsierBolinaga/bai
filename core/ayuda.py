@@ -15,26 +15,36 @@ MODOS Y PRIVACIDAD
 OFFLINE: es el modo de arranque por defecto. Sólo uso motores locales y no
 contacto servicios externos, ni salto a online si falla un modelo.
 Puedes usar la memoria, la ayuda y el estado sin ningún motor disponible.
+Antes de abrir la sesión, el lanzador comprueba el Qwen ligero configurado:
+si falta, lo descarga de Hugging Face y verifica su SHA256. Esa preparación
+sí necesita internet, pero no envía conversaciones. Después aplica el aislamiento.
 
 DE OFFLINE A ONLINE: pulsa Online o escribe 'pasa a modo online'.
-Esa orden autoriza servicios externos para la sesión; no obliga a enviar
-cada mensaje a internet. Sigo la prioridad configurada: local primero y online
-como respaldo, o bien online primero y locales como respaldo.
+Con aislamiento de proceso, ofrezco guardar y reiniciar antes de cambiar.
+Esa orden autoriza servicios externos para la sesión. La configuración actual
+usa Copilot primero, sin respaldo local automático; otras configuraciones pueden
+dar prioridad local.
 'online: tu pregunta' pide el motor online sólo para ese turno, pero exige
 haber autorizado antes el modo online. No cambia por sí solo el modo.
 Los mensajes enviados a un servicio online pueden incluir contexto del historial
 y de la memoria. Online necesita un servicio configurado, sus credenciales
 y conectividad; cambiar de modo no instala modelos ni configura servicios.
+Copilot usa la cuenta autenticada con 'copilot login', no la sesión de VS Code
+automáticamente. Requiere Copilot CLI y requirements-copilot.txt. El chat no
+tiene herramientas, permisos de archivos ni ejecución de comandos.
 No escribas credenciales en el chat.
 
 DE ONLINE A OFFLINE: pulsa Offline o escribe 'pasa a modo offline'.
-Reactivo la protección de red Python y limito la generación a motores locales.
+Con aislamiento de proceso, ofrezco guardar y reiniciar para recuperar el
+bloqueo del kernel. Con aislamiento Python cambio en la misma sesión.
+Limito la generación a motores locales.
 No borro el historial ni los hechos al cambiar de modo. Volver a offline no
 retira información que ya se haya enviado a un servicio externo.
 Escribe 'estado' para comprobar el modo y la protección realmente activos.
 
 AISLAMIENTO: si el proceso arrancó en un namespace sin red, no puedo habilitar
-online dentro de esa sesión: mantengo offline y explico cómo reiniciar.
+online dentro de esa sesión: el lanzador externo debe reiniciarla, con confirmación
+y sólo después de guardar. Si falla el guardado, no reinicio.
 Para autorizar online al arrancar usa 'python bai.py --ui --online'
 (sin '--ui' para la consola). Con '--aislamiento python' se permiten cambios
 en la misma sesión, pero esa protección no cubre subprocesos ni código nativo.
@@ -67,24 +77,39 @@ guarda al terminar. No cancela la generación: si el motor no termina, el cierre
 sigue esperando. Si falla el guardado, la ventana queda abierta para reintentar.
 
 VOZ LOCAL (VENTANA, FASE 9 EN PROGRESO)
-Actualmente puedo leer respuestas. Todavía no incluyo entrada por micrófono,
-reconocimiento de voz ni clonación de voces.
-El botón 'Voz: OFF' activa la lectura de las siguientes respuestas en español.
+Puedo leer respuestas y reconocer el micrófono localmente. La clonación de
+voces no está implementada.
+El botón 'Voz: OFF' activa la lectura con voz automática según el idioma de la respuesta.
 'Voz: ON' la silencia y corta el audio. También se detiene al enviar un mensaje
 nuevo o cerrar. Está desactivada al abrir; requiere Piper, un modelo de voz
 instalado y el reproductor aplay con una salida de audio disponible.
-La voz instalada es davefx, en español de España. Una vez instalada funciona
+Cada lectura empieza con tres segundos de silencio para dar tiempo a activar
+la salida de audio sin perder las primeras palabras.
+Uso Davefx para castellano, Antton para euskera y Northern English Male para
+cualquier otro idioma. La detección es local y puede fallar con textos cortos
+o mezclados. No traduzco el texto; la tercera voz está preparada para inglés.
+Una vez instalada funciona
 sin internet: no usa servicios online ni descarga modelos automáticamente.
 No es la voz de JARVIS de las películas.
-El desplegable bajo la entrada permite cambiar entre modelos Piper instalados
-en models/voz, sin reiniciar. Se actualiza al abrirlo. 'Probar voz' reproduce
-una frase sin activar la lectura automática (inglés/euskera para modelos cuyos
-nombres empiezan por en_/eu_; castellano para el resto).
-Cada modelo tiene su idioma: cambia manualmente entre castellano, inglés
-y euskera. No es una sola voz multilingüe ni hay detección automática de idioma.
-Cambiar de voz corta el audio
-anterior; la selección dura esta sesión. Para añadir una voz necesitas sus
-archivos .onnx y .onnx.json y revisar su licencia.
+No hay selector manual ni botón de prueba: sólo estas tres voces automáticas.
+Debajo de Voz, 'Escucha: OFF' activa el micrófono continuo; 'Escucha: ON' lo apaga
+y descarta la frase pendiente. Arranca apagado y es independiente de la salida de voz.
+Después de detectar habla, espero cinco segundos de silencio y envío la frase
+automáticamente. El silencio inicial no envía mensajes. La transcripción y la respuesta
+añaden tiempo de espera. Pauso el micrófono mientras transcribo, respondo o leo en voz
+alta; después vuelvo a escuchar. Lo que digas durante esa pausa no se recoge.
+El selector del micrófono permite Automático, Castellano, Euskera e Inglés.
+Para euskera conviene seleccionar Euskera: la detección automática suele confundirlo.
+Cambiar el idioma descarta la captura pendiente, sin modificar las voces de salida.
+Requiere requirements-escucha.txt, PortAudio, un micrófono disponible y preparar
+el modelo con 'venv/bin/python -m core.escucha --preparar' antes de arrancar.
+Uso Whisper small multilingüe en CPU, sin traducir ni enviar audio a servicios externos.
+No guardo grabaciones: la transcripción entra al chat y al historial como un mensaje
+escrito. En modo online, esa transcripción se envía al motor online como cualquier texto.
+El ruido, el acento y frases cortas pueden producir errores; no se garantiza exactitud.
+Tras 90 segundos de captura sin terminar la frase, muestro un error y apago la escucha.
+Un fallo de micrófono o transcripción también la apaga con aviso; puedes reactivarla.
+No hay palabra de activación: mientras Escucha está ON recoge el habla de alrededor.
 La esfera indica cuándo preparo la respuesta y cuándo la estoy leyendo;
 su pulso es decorativo, no sigue la amplitud del sonido.
 

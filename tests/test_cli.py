@@ -88,6 +88,28 @@ def test_arranque_muestra_politica_y_sale_guardando(cli, capsys):
     assert cli.historial_guardado() == []
 
 
+@pytest.mark.parametrize("confirmar", [False, True])
+def test_reinicio_confirmado_guarda_sin_llamar_a_copilot(cli, monkeypatch, confirmar):
+    from core.reinicio import ONLINE
+    cli.selector.config["aislamiento_offline"] = "proceso"
+    entradas = iter(["pasa a modo online", "s" if confirmar else "n", "salir"])
+    monkeypatch.setattr(builtins, "input", lambda *_: next(entradas))
+    resultado = assistant.run_assistant()
+    assert resultado == (ONLINE if confirmar else None)
+    assert cli.historial_guardado() == [] and cli.selector.modo == "offline"
+    assert cli.fake.motores.todos["on_a"].llamadas == []
+
+
+def test_reinicio_cli_no_sale_si_falla_guardado(cli, monkeypatch, capsys):
+    cli.selector.config["aislamiento_offline"] = "proceso"
+    entradas = iter(["pasa a modo online", "s", "salir"])
+    monkeypatch.setattr(builtins, "input", lambda *_: next(entradas))
+    monkeypatch.setattr(assistant, "save_chat_history", lambda historial: False)
+    assert assistant.run_assistant() is None
+    assert "No se puede reiniciar" in capsys.readouterr().out
+    assert cli.selector.modo == "offline"
+
+
 def test_frases_sobre_el_comando_no_autorizan_online(cli, capsys):
     out = cli.ejecutar([
         "No quiero cambiar a modo online",
@@ -345,7 +367,7 @@ a.run_assistant()
     r = subprocess.run([sys.executable, "-c", programa], cwd=str(tmp_path), capture_output=True, text=True, timeout=60,
                        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
     assert r.returncode == 0, r.stderr
-    assert "Hola, Usuario" in r.stdout and "Modo actual: OFFLINE" in r.stdout and "Agur" in r.stdout
+    assert "Hola, Boli" in r.stdout and "Modo actual: OFFLINE" in r.stdout and "Agur, Boli" in r.stdout
     assert (tmp_path / "hist" / "historial.json").exists()
     assert not (tmp_path / "history").exists() and not (tmp_path / "config").exists()
 

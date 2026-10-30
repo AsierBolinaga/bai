@@ -9,6 +9,11 @@ import pytest
 from core import voz
 
 
+def test_davefx_es_modelo_castellano():
+    lector = voz.VozLocal()
+    assert lector.modelo == (voz.DIRECTORIO_VOCES / "es_ES-davefx-medium.onnx").resolve()
+
+
 @pytest.fixture
 def proceso(monkeypatch, tmp_path):
     class Proceso:
@@ -32,10 +37,12 @@ def proceso(monkeypatch, tmp_path):
             self.matado = True
 
     p = Proceso()
-    modelo = tmp_path / "voz.onnx"
-    modelo.touch()
-    (tmp_path / "voz.onnx.json").touch()
-    monkeypatch.setenv("BAI_VOZ_MODELO", str(modelo))
+    for ruta in voz.VOCES.values():
+        modelo = tmp_path / ruta
+        modelo.parent.mkdir(parents=True, exist_ok=True)
+        modelo.touch()
+        modelo.with_suffix(".onnx.json").touch()
+    monkeypatch.setattr(voz, "DIRECTORIO_VOCES", tmp_path)
     monkeypatch.setattr(voz.importlib.util, "find_spec", lambda nombre: object())
     monkeypatch.setattr(voz.shutil, "which", lambda nombre: "/usr/bin/aplay")
 
@@ -57,7 +64,7 @@ def test_lectura_usa_stdin_sin_shell_y_libera_recursos(proceso):
     assert texto not in proceso.argumentos
     assert proceso.argumentos[-3].endswith("/core/voz.py")
     assert proceso.argumentos[-2] == "--reproducir"
-    assert proceso.argumentos[-1].endswith("voz.onnx")
+    assert proceso.argumentos[-1] == str(voz.DIRECTORIO_VOCES)
     assert lector.comprobar() == (True, None)
     proceso.codigo = 0
     assert lector.comprobar() == (False, None)
@@ -95,7 +102,7 @@ def test_sin_piper_se_informa(monkeypatch):
 
 
 def test_modelo_ausente_se_informa(proceso, monkeypatch, tmp_path):
-    monkeypatch.setenv("BAI_VOZ_MODELO", str(tmp_path / "ausente.onnx"))
+    (tmp_path / voz.VOCES["eu"]).unlink()
     assert "Falta el modelo" in voz.VozLocal().motivo_no_disponible
 
 
@@ -104,32 +111,32 @@ def test_reproductor_ausente_se_informa(proceso, monkeypatch):
     assert "aplay" in voz.VozLocal().motivo_no_disponible
 
 
-@pytest.mark.parametrize("nombre,inicio", [
-    ("es_ES-carlfm-x_low.onnx", "Hola"),
-    ("en_GB-northern_english_male-medium.onnx", "Hello"),
-    ("eu_ES-antton-medium.onnx", "Kaixo"),
+@pytest.mark.parametrize("texto,idioma", [
+    ("Hola", "es"), ("¡Hola! ¿Cómo puedo ayudarte hoy?", "es"),
+    ("Kaixo", "eu"), ("Kaixo, Boli. Zer moduz zaude?", "eu"),
+    ("Ondo nago, eskerrik asko. Zertan lagun zaitzaket?", "eu"),
+    ("Hello, how can I help you today?", "en"), ("12345", "en"),
 ])
-def test_muestra_en_idioma_del_nombre_del_modelo(monkeypatch, nombre, inicio):
-    monkeypatch.setenv("BAI_VOZ_MODELO", nombre)
-    assert voz.VozLocal().texto_prueba.startswith(inicio)
+def test_deteccion_local_de_idioma(texto, idioma):
+    pytest.importorskip("langid")
+    assert voz.detectar_idioma(texto) == idioma
 
 
-def test_listado_modelos_completos_y_seleccion_cancela_audio(proceso, monkeypatch, tmp_path):
-    carpeta = tmp_path / "voces con espacios"
-    carpeta.mkdir()
-    otro = carpeta / "segunda.onnx"
-    otro.touch()
-    (carpeta / "segunda.onnx.json").touch()
-    (carpeta / "incompleta.onnx").touch()
-    monkeypatch.setattr(voz, "DIRECTORIO_VOCES", carpeta)
-    lector = voz.VozLocal()
-    assert set(lector.modelos_instalados()) == {lector.modelo, otro}
-    lector.hablar("hola")
-    lector.seleccionar_modelo(otro)
-    assert lector.modelo == otro and proceso.terminado
-    with pytest.raises(ValueError, match="incompleto"):
-        lector.seleccionar_modelo(carpeta / "incompleta.onnx")
-    assert lector.modelo == otro
+@pytest.mark.parametrize("idioma,clave", [("es", "es"), ("eu", "eu"), ("en", "en"),
+                                        ("fr", "en"), ("ja", "en")])
+def test_ruta_automatica_y_error_si_falta(proceso, monkeypatch, tmp_path, idioma, clave):
+    monkeypatch.setattr(voz, "detectar_idioma", lambda texto: idioma)
+    esperado = tmp_path / voz.VOCES[clave]
+    assert voz.modelo_para_texto("texto", tmp_path) == esperado
+    esperado.with_suffix(".onnx.json").unlink()
+    with pytest.raises(RuntimeError, match="Falta la voz automática"):
+        voz.modelo_para_texto("texto", tmp_path)
+
+
+def test_sin_detector_se_informa(proceso, monkeypatch):
+    monkeypatch.setattr(voz.importlib.util, "find_spec",
+                        lambda nombre: None if nombre == "langid" else object())
+    assert "detector local" in voz.VozLocal().motivo_no_disponible
 
 
 def test_fallo_al_arrancar_libera_archivo(proceso, monkeypatch):
@@ -145,10 +152,12 @@ def test_fallo_al_arrancar_libera_archivo(proceso, monkeypatch):
     assert errores[0].closed
 
 
+@pytest.mark.parametrize("canales", [1, 2])
 @pytest.mark.parametrize("fallo", [None, "audio", "cancelar"])
-def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo):
+def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo, canales):
     procesos = []
-    audio = SimpleNamespace(sample_rate=22050, sample_channels=1, audio_int16_bytes=b"\0\0" * 100)
+    audio = SimpleNamespace(sample_rate=22050, sample_channels=canales,
+                            audio_int16_bytes=b"\x01\x02" * 100 * canales)
 
     class Motor:
         @staticmethod
@@ -161,11 +170,19 @@ def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo):
             yield audio
             if fallo == "cancelar":
                 voz._cancelar(None, None)
+            yield audio
+
+    class Entrada(io.BytesIO):
+        def close(self):
+            self.contenido = self.getvalue()
+            super().close()
 
     class Reproductor:
-        stdin = io.BytesIO()
         codigo = None
         terminado = False
+
+        def __init__(self):
+            self.stdin = Entrada()
 
         def poll(self):
             return self.codigo
@@ -178,7 +195,7 @@ def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo):
             self.terminado = True
 
     def crear(args, **kw):
-        assert args == ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "22050", "-c", "1"]
+        assert args == ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", "22050", "-c", str(canales)]
         reproductor = Reproductor()
         procesos.append(reproductor)
         return reproductor
@@ -195,3 +212,8 @@ def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo):
     else:
         voz._reproducir("hola", "voz.onnx")
         assert procesos[0].codigo == 0
+    silencio = b"\0" * (22050 * 3 * canales * 2)
+    entrada = procesos[0].stdin
+    contenido = entrada.contenido if entrada.closed else entrada.getvalue()
+    assert contenido == silencio + audio.audio_int16_bytes * (1 if fallo == "cancelar" else 2)
+    assert len(procesos) == 1
