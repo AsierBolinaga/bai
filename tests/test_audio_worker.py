@@ -199,11 +199,12 @@ servir('escucha', {'silencio_escucha': 0.6})
     assert esperar(w, "estado") in ("capturando", "abortado")
 
 
-def test_pausa_y_cierre_terminan_reproductor_hijo_sin_perder_worker(worker):
+@pytest.mark.parametrize("demora_registro", [0, 0.15])
+def test_pausa_y_cierre_terminan_reproductor_hijo_sin_perder_worker(worker, demora_registro):
     from pathlib import Path
 
     codigo = """
-import json, sys, subprocess
+import json, sys, subprocess, time
 from types import SimpleNamespace
 from core import voz
 from core.audio_worker import servir
@@ -212,6 +213,7 @@ def crear(args, **kw):
     p = original([sys.executable, '-c',
                   'import sys,time; sys.stdin.buffer.read(); time.sleep(30)'], **kw)
     print(json.dumps([0, 'estado', str(p.pid)]), flush=True)
+    time.sleep(DEMORA)
     return p
 class Motor:
     def synthesize(self, *a, **kw):
@@ -223,7 +225,7 @@ sys.modules['piper'] = SimpleNamespace(
 voz.modelo_para_texto = lambda *a, **kw: 'voz'
 voz.subprocess.Popen = crear
 servir('voz', {'silencio_reproduccion': 0})
-"""
+""".replace("DEMORA", repr(demora_registro))
     w = worker("voz", codigo)
     esperar(w, "listo")
     pid_worker = w.proceso.pid
@@ -237,6 +239,44 @@ servir('voz', {'silencio_reproduccion': 0})
     hijo = int(esperar(w, "estado"))
     w.cerrar()
     assert not Path(f"/proc/{hijo}").exists()
+
+
+def test_cierre_audio_mata_grupo_si_worker_no_ejecuta_limpieza(worker):
+    from pathlib import Path
+    codigo = """
+import json, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+print(json.dumps([0, 'estado', str(p.pid)]), flush=True)
+time.sleep(60)
+"""
+    w = worker("voz", codigo)
+    hijo = int(esperar(w, "estado"))
+    proceso = w.proceso
+    inicio = time.monotonic()
+    w.cerrar()
+    assert time.monotonic() - inicio < 2
+    assert proceso.poll() is not None
+    ruta = Path(f"/proc/{hijo}/stat")
+    # Un nieto muerto puede quedar zombi hasta que lo recoja el init del entorno.
+    assert not ruta.exists() or ruta.read_text().split()[2] == "Z"
+
+
+def test_cierre_audio_informa_si_lector_no_confirma_sin_join_infinito(worker):
+    from types import SimpleNamespace
+    w = worker("voz", "import time; print('[0, \"listo\", \"\"]', flush=True); time.sleep(60)")
+    esperar(w, "listo")
+    hilo = w._hilo
+    esperas = []
+    w._hilo = SimpleNamespace(join=lambda timeout: esperas.append(timeout), is_alive=lambda: True)
+    try:
+        inicio = time.monotonic()
+        with pytest.raises(RuntimeError, match="canal de audio"):
+            w.cerrar()
+        assert time.monotonic() - inicio < 2
+        assert esperas and all(0 < espera <= 0.5 for espera in esperas)
+    finally:
+        w._hilo = hilo
 
 
 @pytest.mark.parametrize("valor", [-1, True, "2", float("nan"), float("inf"), 31])

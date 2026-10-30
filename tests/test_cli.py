@@ -87,25 +87,18 @@ def test_ctrl_c_en_generacion_no_guarda_turno_parcial_y_permite_seguir(cli, monk
 
 def test_arranque_degradado_conserva_ayuda_memoria_estado_y_online(cli, monkeypatch, capsys):
     import bai
-    from core.motors import registry
-    from core.motors.base import MotorError
     cfg = cli.selector.config
     cfg["offline"]["fallback"] = []
     cfg["offline"]["motores"]["off_a"]["descargar_al_arrancar"] = True
-    def fallar(opciones):
-        raise MotorError("carga fallida de prueba")
-    from core import preparar_modelo
-    monkeypatch.setattr(preparar_modelo, "preparar_modelo", lambda cfg: None)
-    monkeypatch.setattr(registry, "obtener_motor", lambda _: type("Motor", (), {
-        "disponible": staticmethod(lambda opciones: (True, "")),
-        "cargar_modelo": staticmethod(fallar)}))
+    monkeypatch.setattr(cli.selector, "iniciar_carga_local", lambda: cli.selector.marcar_no_disponible(
+        "off_a", "Modo degradado: carga fallida de prueba"))
     monkeypatch.setattr(bai, "preparar_arranque", lambda _: cfg)
     entradas = iter(["estado", "ayuda", "recuerda que mi color es azul", "¿cuál es mi color?",
                      "hola", "pasa a modo online", "hola online", "salir"])
     monkeypatch.setattr(builtins, "input", lambda *_: next(entradas))
     bai.main(["--sesion"])
     salida = capsys.readouterr()
-    assert "Modo degradado" in salida.err and "carga fallida de prueba" in salida.out
+    assert "Modo degradado" in salida.out and "carga fallida de prueba" in salida.out
     assert "Boli Artificial Intelligence" in salida.out
     assert "azul" in salida.out and cli.hechos_guardados()
     assert "Modo cambiado a ONLINE" in salida.out and "respuesta de on_a" in salida.out

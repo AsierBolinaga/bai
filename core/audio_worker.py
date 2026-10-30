@@ -1,11 +1,15 @@
 """Worker persistente de audio: IPC por JSON, sin grabaciones en disco."""
 import json
+import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 from pathlib import Path
+
+ESPERA_CIERRE_AUDIO = 0.5
 
 
 class ProcesoAudio:
@@ -27,7 +31,7 @@ class ProcesoAudio:
                 [sys.executable, "-m", "core.audio_worker", self.tipo, json.dumps(opciones)],
                 cwd=str(Path(__file__).resolve().parents[1]),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errores,
-                text=True, encoding="utf-8", bufsize=1)
+                text=True, encoding="utf-8", bufsize=1, start_new_session=True)
         except OSError:
             errores.close()
             raise
@@ -52,11 +56,11 @@ class ProcesoAudio:
                             eventos.put(tuple(evento))
                     except (ValueError, TypeError) as error:
                         eventos.put((0, "error", f"Protocolo de audio inválido: {error}"))
-                codigo = proceso.wait()
+                codigo = proceso.wait(timeout=ESPERA_CIERRE_AUDIO)
                 errores.seek(0)
                 detalle = errores.read().decode("utf-8", errors="replace").strip()
                 eventos.put((0, "error", f"El worker de audio terminó ({codigo}): {detalle}"))
-            except (OSError, ValueError) as error:
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
                 eventos.put((0, "error", f"No se puede leer el worker de audio: {error}"))
 
         self._hilo = threading.Thread(target=recibir, name=f"bai-audio-{self.tipo}", daemon=True)
@@ -97,11 +101,21 @@ class ProcesoAudio:
             if self.proceso.poll() is None:
                 self.proceso.terminate()
                 try:
-                    self.proceso.wait(timeout=1)
+                    self.proceso.wait(timeout=ESPERA_CIERRE_AUDIO)
                 except subprocess.TimeoutExpired:
-                    self.proceso.kill()
-                    self.proceso.wait()
-            self._hilo.join()
+                    pass
+            # Tambien detiene el reproductor si el worker no alcanzo su callback.
+            try:
+                os.killpg(self.proceso.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                self.proceso.wait(timeout=ESPERA_CIERRE_AUDIO)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError("El proceso de audio no confirmó su cierre.") from error
+            self._hilo.join(timeout=ESPERA_CIERRE_AUDIO)
+            if self._hilo.is_alive():
+                raise RuntimeError("El canal de audio no terminó tras cerrar el proceso.")
             self.proceso.stdin.close()
             self.proceso.stdout.close()
             self._errores.close()
@@ -127,6 +141,14 @@ class Trabajo:
         with self._lock:
             self.comprobar()
             self._recurso = parar
+
+    def crear_recurso(self, crear, parar):
+        # La cancelacion no puede confirmar una pausa entre crear y registrar.
+        with self._lock:
+            self.comprobar()
+            recurso = crear()
+            self._recurso = lambda: parar(recurso)
+            return recurso
 
     def liberar(self):
         with self._lock:

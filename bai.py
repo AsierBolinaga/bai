@@ -49,37 +49,12 @@ def main(argv=None):
     config = preparar_arranque(argv)
     from core.ai_engine import get_selector
     selector = get_selector()
-    aviso_arranque = None
     if config["modo_por_defecto"] == "offline":
-        from core.motors import registry
-        from core.motors.base import MotorError
-        nombre_motor = config["offline"]["motor"]
-        opciones = config["offline"]["motores"][nombre_motor]
-        error_local = None
-        try:
-            motor = registry.obtener_motor(nombre_motor)
-            ok, motivo = motor.disponible(opciones)
-            if not ok:
-                raise MotorError(f"{motivo}. Prepara el modelo con './bai.sh --preparar-modelo' "
-                                 "si usas el Qwen predeterminado; para otros modelos revisa su configuración.")
-            if opciones.get("descargar_al_arrancar"):
-                from core.preparar_modelo import preparar_modelo
-                preparar_modelo(config)
-                selector.precargar(motor, opciones)
-        except (MotorError, OSError, ImportError) as error:
-            error_local = f"No se pudo cargar el modelo local: {error}"
-        if error_local:
-            from core.ai_engine import get_selector
-            get_selector().marcar_no_disponible(nombre_motor, error_local)
-            aviso_arranque = (
-                f"Modo degradado: {nombre_motor} no disponible. {error_local}. "
-                "Puedes usar ayuda, memoria y estado, o autorizar el cambio a Online. "
-                "Corrige el problema y reinicia B.A.I. para reintentar el motor local.")
-            print(f"[B.A.I] {aviso_arranque}", file=sys.stderr)
+        selector.iniciar_carga_local()
     try:
         if ui:
             from core.ui_tk import iniciar_ui
-            return iniciar_ui(raiz=raiz, aviso_arranque=aviso_arranque)
+            return iniciar_ui(raiz=raiz)
         else:
             from core.assistant import run_assistant
             return run_assistant()

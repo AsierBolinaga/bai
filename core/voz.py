@@ -156,20 +156,23 @@ def _reproducir(texto, modelo, *, motor=None, trabajo=None, silencio=SILENCIO_IN
             if trabajo is not None:
                 trabajo.comprobar()
             if reproductor is None:
-                reproductor = subprocess.Popen(
-                    ["aplay", "-q", "-t", "raw", "-f", "S16_LE",
-                     "-r", str(audio.sample_rate), "-c", str(audio.sample_channels)],
-                    stdin=subprocess.PIPE)
-                if trabajo is not None:
-                    def parar():
-                        if reproductor.poll() is None:
-                            reproductor.terminate()
-                            try:
-                                reproductor.wait(timeout=0.5)
-                            except subprocess.TimeoutExpired:
-                                reproductor.kill()
-                                reproductor.wait()
-                    trabajo.recurso(parar)
+                def crear():
+                    return subprocess.Popen(
+                        ["aplay", "-q", "-t", "raw", "-f", "S16_LE",
+                         "-r", str(audio.sample_rate), "-c", str(audio.sample_channels)],
+                        stdin=subprocess.PIPE)
+
+                def parar(proceso):
+                    if proceso.poll() is None:
+                        proceso.terminate()
+                        try:
+                            proceso.wait(timeout=0.2)
+                        except subprocess.TimeoutExpired:
+                            proceso.kill()
+                            proceso.wait(timeout=0.2)
+
+                reproductor = (crear() if trabajo is None
+                               else trabajo.crear_recurso(crear, parar))
                 # La salida de audio puede tardar en activarse y perder las primeras palabras.
                 muestras = round(audio.sample_rate * silencio)
                 reproductor.stdin.write(b"\0" * (muestras * audio.sample_channels * 2))
@@ -180,15 +183,12 @@ def _reproducir(texto, modelo, *, motor=None, trabajo=None, silencio=SILENCIO_IN
             if reproductor.wait() != 0:
                 raise RuntimeError("El reproductor de audio local ha fallado.")
     finally:
-        if trabajo is not None:
-            trabajo.liberar()
-        if reproductor is not None and reproductor.poll() is None:
-            reproductor.terminate()
-            try:
-                reproductor.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                reproductor.kill()
-                reproductor.wait()
+        try:
+            if reproductor is not None:
+                parar(reproductor)
+        finally:
+            if trabajo is not None:
+                trabajo.liberar()
 
 
 def _cancelar(_senal, _marco):

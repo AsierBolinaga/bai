@@ -158,6 +158,10 @@ def ask(user_input, chat_history, selector=None):
     if es_peticion_ayuda(user_input):
         return AYUDA_BAI
     selector = selector or get_selector()
+    if user_input.strip().lower() == "cancelar carga":
+        selector.cancelar_carga_local()
+        estado = selector.estado_carga_local()
+        return estado["detalle"] if estado else "No hay una preparación local en curso."
     if chat_history is None:
         chat_history = []
 

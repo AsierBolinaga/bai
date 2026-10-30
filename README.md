@@ -137,12 +137,33 @@ The independent preparation action cannot be combined with `--offline`,
 3. Exits without starting chat, loading conversation memory or changing modes.
    A preparation failure returns a nonzero exit code with an explicit error.
 
-Normal local startup applies isolation, checks local availability and, for the
-shipped Qwen configuration, verifies the file and attempts to load it once,
-reusing it for replies. **No model is downloaded during startup**, even if the
+Normal local startup applies isolation and starts a **background preparation
+worker without waiting before opening the window or console**. It checks local
+availability and, for the shipped Qwen configuration, verifies the file and
+attempts to load it once, reusing that same worker and model for replies.
+The entire worker request (import, availability check, verification and loading)
+has a **60-second limit**, followed by bounded process termination if needed.
+**No model is downloaded during startup**, even if the
 legacy `descargar_al_arrancar: true` setting is present. That setting now only
 enables local verification/preloading. Restarting from Online to Offline also
-does not prepare/download a model.
+never downloads a model; it starts the same local-only background checks.
+
+The window shows preparation status and a **Cancelar carga** button.
+**Escape** cancels preparation when no chat turn is running; the command
+`cancelar carga` is also available in either interface. In the console,
+`estado` reports the current preparation state; background notices are printed
+between prompts, not by interrupting a pending input. Help, memory and mode
+commands are usable immediately. A request to a still-preparing primary model
+does not wait or queue: it reports that state (or uses an already configured
+fallback); send the question again once ready. No online service is authorized
+by preparation or a failure.
+
+Explicitly switching to Online cancels unfinished local preparation, and the
+online motor uses a separate worker so it need not wait for local cleanup.
+Closing also requests cancellation. A timeout, error or cancellation disables
+that primary motor for this session; it does not retry automatically.
+Without `descargar_al_arrancar`, background preparation checks availability only;
+the model then loads on demand during a normal, cancellable chat request.
 
 Missing `llama-cpp-python`, missing models, verification failures and model-load errors
 do not prevent access to the console or window. A visible startup warning
@@ -414,17 +435,33 @@ subprocesses; the existing isolation limitations remain.
 
 Closing cancels the turn and saves a snapshot of **completed** history, rather
 than joining the generation thread indefinitely. A cancelled backend cannot
-append or save a late response. Saving runs outside Tk. If it has not confirmed
-completion after three seconds, the window offers either closing without that
-confirmation (risking unsaved changes) or explicitly continuing to wait.
-A forced close cancels any pending mode restart. A failed final save keeps the
-window open with a visible error so the user can retry. Audio-worker teardown and
-the final bounded engine teardown are separate from that three-second save check;
-it is not a hard deadline for arbitrary operating-system disk failures.
+append or save a late response. The window shows the closing notice and starts
+its three-second confirmation deadline **before** cleaning up audio. Saving and
+audio teardown run in separate background threads, so neither blocks Tk or waits
+for the other to start. Normal closure requires both confirmations. If either is
+still pending after three seconds, the window offers closing without confirmation
+(risking unsaved changes or unfinished cleanup) or explicitly continuing to wait.
+A forced close cancels any pending mode restart. A failed save or audio teardown
+keeps the window open with a visible error so the user can retry.
+
+Audio workers have their own process groups. Teardown uses bounded 0.5-second
+process waits and reader-thread joins, with a final group kill to remove any
+remaining player. Creating a player and registering its cancellation callback
+are atomic with respect to pausing; a pause cannot be acknowledged between them.
+Window destruction schedules cleanup only once. After Tk's main loop exits,
+the application waits at most another three seconds for audio cleanup; if it is
+still unconfirmed it reports the problem and suppresses restart. These bounds
+are not a hard operating-system exit deadline for disk or kernel failures.
+Normal-use audio pauses and OFF toggles remain synchronous; this change removes
+audio waiting from window closing/destruction, not every audio interaction.
 
 In the console, **Ctrl+C during a response** cancels the request and returns to
 the prompt; **Ctrl+C at the prompt** saves history and exits. The supervisor lets
-the session handle that interrupt instead of killing it. Cancellation does not
+the session handle that interrupt instead of killing it. During worker execution,
+Ctrl+C is deferred to safe checkpoints, including worker creation, request
+transmission and final writer cleanup. Repeated interrupts do not interrupt
+process teardown, and the previous signal handler is restored afterwards.
+Cancellation does not
 undo memory commands that already wrote facts, withdraw context already sent
 online, or guarantee that a remote server stops computation/billing after the
 local connection and CLI have been terminated. Connectivity/availability checks
@@ -853,6 +890,64 @@ the UI and audio. Validate the authorized online flow separately with explicit
 user authorization. Automated tests with simulated backends and a virtual
 display remain useful regression checks, but do not replace these real-use
 checks; record their outcomes and any remaining limitations before advancing.
+
+Nonblocking startup validation (2026-10-30):
+
+- The isolated regression suite passed 1,318 tests, with 19 skips for unavailable
+  namespaces and optional real-model test dependencies. A final focused run
+  passed 136 startup, UI, CLI, worker and restart tests, including an additional
+  unknown-engine diagnostic regression.
+- Regression tests cover blocked availability checks, verification and model
+  loading, with timeout and cancellation, warm-worker reuse, mode changes and
+  explicit error reporting. A Tk test under a virtual display verifies that help
+  and the cancellation button work while the backend is blocked.
+- The launcher Ctrl+C test now waits for an observed available state instead of
+  sending a generation request before background preparation completes.
+- A synthetic check with the installed Qwen returned from background-start
+  scheduling in 0.0013 seconds, completed verification/loading in 2.03 seconds,
+  and answered from the same worker. No personal context or online service was
+  used. These are individual timings, not guaranteed startup performance.
+- At this checkpoint, audio teardown still waited on the Tk thread. The later
+  cancellation and closing checkpoint below replaces that closing behavior.
+  Audio silence tuning and real microphone acceptance remain pending.
+
+Cancellation and audio closing stabilization checkpoint (2026-10-30):
+
+- The isolated regression suite passed **1,332 tests**, with 19 skips for
+  unavailable user namespaces and optional real-model test dependencies.
+- Ten further stress rounds passed all 11 selected Ctrl+C and audio-cleanup
+  cases each (**110 additional passes**). They cover the real launcher,
+  interrupts during worker creation, sending, receiving, repeated signals during
+  cleanup and the final writer join, plus player pause/close races and workers
+  that ignore TERM. No intermittent failure was reproduced in these runs; this
+  does not prove that every timing/environment-dependent failure is eliminated.
+- Tk tests with a virtual display verify that blocked audio teardown does not
+  block callbacks or history saving, that the three-second dialog can force
+  closure, and that cleanup errors remain visible and retryable. Audio activated
+  again after a failed save is cleaned up by the next close.
+- Player tests retain the strict `/proc` disappearance check for a directly
+  owned child that must be reaped. The forced-group-kill test distinguishes a
+  running orphan from a zombie awaiting collection by the system.
+- No new physical microphone/playback or authorized online acceptance test was
+  performed. Silence defaults remain 5 seconds for listening and 3 seconds
+  before playback; phase 9 and the real-use checks above remain open.
+
+### Pending improvement: web queries with a local model
+
+- **Pending, not implemented:** let the local model answer using web search
+  results without switching inference to Copilot or another cloud model.
+- Keep strict Offline mode unchanged. Add separate, explicit web authorization,
+  OFF by default; initially require a request such as “busca en Internet…”.
+- Keep the model worker isolated and perform approved searches/page retrieval
+  through a separate, restricted network component; adapt the launcher and
+  isolation boundary rather than granting unrestricted network access.
+- Send only the necessary query, not the personal profile or full history
+  automatically. Explain what leaves the machine and cite source links.
+- Choose a search provider/API before implementation. Apply timeouts,
+  cancellation, bounded retrieval and safeguards against malicious page
+  instructions; web content must be treated as untrusted data.
+- Validate result quality with the local Qwen model. This backlog item does not
+  authorize network access now or resume the paused roadmap phases.
 
 Initial validation checkpoint on Ubuntu (2026-10-30, before lightweight startup integration):
 

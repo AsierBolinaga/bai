@@ -222,6 +222,8 @@ def ventana_tk(entorno):
         raiz.destroy()
     except tk.TclError:
         pass
+    if v._hilo_audio_cierre is not None:
+        v._hilo_audio_cierre.join(timeout=3)
 
 
 @pytest.mark.parametrize("disponible", [True, False])
@@ -620,6 +622,118 @@ def test_cierre_acotado_ofrece_salir_si_guardado_no_responde(ventana_tk, monkeyp
         sale.set()
 
 
+@pytest.mark.parametrize("destruir", [False, True])
+def test_cierre_audio_lento_no_bloquea_tk_ni_repite_limpieza(
+        ventana_tk, voz_fake, escucha_fake, monkeypatch, destruir):
+    from core import ui_tk
+    v = ventana_tk
+    entra, sale, guardado = threading.Event(), threading.Event(), threading.Event()
+    llamadas = []
+
+    def detener_micro():
+        llamadas.append(("micro", threading.get_ident()))
+        entra.set()
+        assert sale.wait(5)
+
+    def detener_voz():
+        llamadas.append(("voz", threading.get_ident()))
+
+    def pausa_prohibida():
+        pytest.fail("el cierre debe detener directamente, sin esperar pausas en Tk")
+
+    monkeypatch.setattr(escucha_fake, "detener", detener_micro)
+    monkeypatch.setattr(voz_fake, "detener", detener_voz)
+    monkeypatch.setattr(escucha_fake, "pausar", pausa_prohibida)
+    monkeypatch.setattr(voz_fake, "pausar", pausa_prohibida)
+    v.controlador._guardar = lambda h: guardado.set() or True
+    principal = threading.get_ident()
+    try:
+        inicio = time.monotonic()
+        if destruir:
+            v.raiz.destroy()
+        else:
+            v.cerrar()
+        assert time.monotonic() - inicio < 0.2
+        assert entra.wait(1)
+        if not destruir:
+            assert guardado.wait(1)
+            assert "cierro el audio" in _chat(v)
+            latidos = []
+            v.raiz.after(1, lambda: latidos.append(True))
+            _esperar(v, lambda: bool(latidos))
+            assert not v._cerrada
+            v.cerrar()
+        assert llamadas == [("micro", llamadas[0][1])]
+        assert llamadas[0][1] != principal
+    finally:
+        sale.set()
+        v._hilo_audio_cierre.join(timeout=2)
+    assert [nombre for nombre, _ in llamadas] == ["micro", "voz"]
+    assert all(identificador != principal for _, identificador in llamadas)
+    if not destruir:
+        _esperar(v, lambda: v._cerrada)
+    assert len(llamadas) == 2
+
+
+def test_cierre_audio_bloqueado_ofrece_salida_en_plazo(ventana_tk, voz_fake, monkeypatch):
+    from core import ui_tk
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+    confirmaciones = []
+
+    def detener():
+        entra.set()
+        assert sale.wait(5)
+
+    monkeypatch.setattr(voz_fake, "detener", detener)
+    monkeypatch.setattr(ui_tk, "PLAZO_CIERRE_SEGUNDOS", 0.1)
+    monkeypatch.setattr(ui_tk.messagebox, "askyesno",
+                        lambda *a, **kw: confirmaciones.append(a) or True)
+    try:
+        v.cerrar()
+        assert entra.wait(1)
+        _esperar(v, lambda: v._cerrada, segundos=1)
+        assert len(confirmaciones) == 1
+        assert "limpieza de audio" in confirmaciones[0][1]
+        assert not sale.is_set()
+    finally:
+        sale.set()
+        v._hilo_audio_cierre.join(timeout=2)
+
+
+def test_error_cierre_audio_es_visible_y_se_puede_reintentar(ventana_tk, voz_fake, monkeypatch):
+    v = ventana_tk
+
+    def fallar():
+        raise RuntimeError("lector de audio bloqueado")
+
+    monkeypatch.setattr(voz_fake, "detener", fallar)
+    v.cerrar()
+    _esperar(v, lambda: not v._cerrando)
+    assert "No he podido cerrar el audio" in _chat(v) and not v._cerrada
+    assert not v._voz_activada and not v._escucha_activada
+    monkeypatch.setattr(voz_fake, "detener", lambda: None)
+    v.cerrar()
+    _esperar(v, lambda: v._cerrada)
+
+
+def test_audio_reactivado_tras_fallo_guardado_se_limpia_en_siguiente_cierre(
+        ventana_tk, voz_fake):
+    v = ventana_tk
+    v._alternar_voz()
+    v.controlador._guardar = lambda h: False
+    v.cerrar()
+    _esperar(v, lambda: not v._cerrando)
+    assert voz_fake.cierres == 1
+    v._alternar_voz()
+    v._leer("otra lectura")
+    assert voz_fake.activo and v._voz_activada
+    v.controlador._guardar = lambda h: True
+    v.cerrar()
+    _esperar(v, lambda: v._cerrada)
+    assert voz_fake.cierres == 2 and not voz_fake.activo
+
+
 @pytest.mark.parametrize("excepcion", [False, True])
 def test_cierre_fallido_mantiene_ventana_y_permite_reintentar(ventana_tk, excepcion):
     v = ventana_tk
@@ -787,8 +901,9 @@ def test_cierre_y_destruccion_detienen_microfono(ventana_tk, escucha_fake):
     v._alternar_escucha()
     assert escucha_fake.activa
     v.cerrar()
-    assert not escucha_fake.activa and not v._escucha_activada
+    assert not v._escucha_activada
     _esperar(v, lambda: v._cerrada)
+    assert not escucha_fake.activa
 
 
 def test_activar_escucha_durante_voz_espera_a_que_termine(ventana_tk, escucha_fake, voz_fake):

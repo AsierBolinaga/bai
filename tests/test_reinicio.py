@@ -63,12 +63,9 @@ def test_preparacion_explicita_termina_sin_abrir_chat(monkeypatch):
     assert llamadas == [{"permitir_descarga": True}]
 
 
-@pytest.mark.parametrize("error_preparacion", [None, "SHA256 incorrecto"])
 @pytest.mark.parametrize("ui", [False, True])
-def test_sesion_continua_tras_fallo_y_estado_no_reintenta_motor(
-        monkeypatch, selector_fake, error_preparacion, ui):
-    from core.motors import registry
-    from core.motors.base import MotorError
+def test_sesion_inicia_preparacion_sin_esperar_antes_de_abrir(
+        monkeypatch, selector_fake, ui):
     from core import assistant, ui_tk
     cfg = selector_fake.crear().config
     cfg["offline"]["fallback"] = []
@@ -76,16 +73,10 @@ def test_sesion_continua_tras_fallo_y_estado_no_reintenta_motor(
     sel = selector_fake.crear(cfg)
     monkeypatch.setattr(ai_engine, "_selector", sel)
     monkeypatch.setattr(bai, "preparar_arranque", lambda argv: cfg)
-    def verificar(config):
-        if error_preparacion:
-            raise MotorError(error_preparacion)
-    monkeypatch.setattr(preparar_modelo, "preparar_modelo", verificar)
     cargas = []
-    def cargar(opciones):
-        cargas.append(opciones)
-        raise MotorError("fallo de carga")
-    monkeypatch.setattr(registry, "obtener_motor", lambda nombre: SimpleNamespace(
-        disponible=lambda opciones: (True, ""), cargar_modelo=cargar))
+    monkeypatch.setattr(sel, "iniciar_carga_local", lambda: cargas.append("segundo plano"))
+    monkeypatch.setattr(sel, "precargar", lambda *a: pytest.fail("precarga sincrona"))
+    monkeypatch.setattr(preparar_modelo, "preparar_modelo", lambda *a: pytest.fail("verificacion sincrona"))
     raiz = SimpleNamespace(destroy=lambda: pytest.fail("no debe cerrar la ventana"))
     monkeypatch.setattr(ui_tk, "crear_raiz", lambda: raiz)
     inicios = []
@@ -94,40 +85,25 @@ def test_sesion_continua_tras_fallo_y_estado_no_reintenta_motor(
     argv = ["--sesion", "--ui"] if ui else ["--sesion"]
     assert bai.main(argv) == 0
     assert len(inicios) == 1
-    assert len(cargas) == (0 if error_preparacion else 1)
-    motivo = error_preparacion or "fallo de carga"
-    estado = sel.estado()
-    assert not estado["candidatos"][0]["disponible"]
-    assert motivo in estado["candidatos"][0]["motivo"]
+    assert cargas == ["segundo plano"]
     if ui:
-        assert inicios[0]["raiz"] is raiz and motivo in inicios[0]["aviso_arranque"]
-    from core.model_selector import SinMotorDisponible
-    with pytest.raises(SinMotorDisponible, match=motivo):
-        sel.responder([{"role": "user", "content": "hola"}])
+        assert inicios[0] == {"raiz": raiz}
     assert selector_fake.estado["hosts"] == []
-    assert len(cargas) == (0 if error_preparacion else 1)
 
 
-def test_sesion_sana_precarga_y_conserva_motor_disponible(monkeypatch, selector_fake):
+def test_sesion_online_no_inicia_precarga(monkeypatch, selector_fake):
     from core import assistant
-    from core.motors import registry
     sel = selector_fake.crear()
     cfg = sel.config
-    cfg["offline"]["motores"]["off_a"]["descargar_al_arrancar"] = True
+    cfg["modo_por_defecto"] = "online"
     monkeypatch.setattr(bai, "preparar_arranque", lambda argv: cfg)
     monkeypatch.setattr(ai_engine, "_selector", sel)
-    monkeypatch.setattr(preparar_modelo, "preparar_modelo", lambda cfg: None)
-    cargas = []
-    monkeypatch.setattr(registry, "obtener_motor", lambda nombre: SimpleNamespace(
-        disponible=lambda opciones: (True, ""),
-        cargar_modelo=lambda opciones: cargas.append(opciones)))
+    monkeypatch.setattr(sel, "iniciar_carga_local", lambda: pytest.fail("precarga online"))
     monkeypatch.setattr(assistant, "run_assistant", lambda: 0)
     assert bai.main(["--sesion"]) == 0
-    assert len(cargas) == 1 and sel.estado()["candidatos"][0]["disponible"]
 
 
-@pytest.mark.parametrize("libreria", [True, False])
-def test_sesion_real_sin_modelo_ni_red_permite_ayuda_memoria_y_estado(tmp_path, libreria):
+def test_sesion_real_sin_modelo_ni_red_permite_ayuda_memoria_y_estado(tmp_path):
     import shutil
     import subprocess
     import sys
@@ -140,23 +116,34 @@ def test_sesion_real_sin_modelo_ni_red_permite_ayuda_memoria_y_estado(tmp_path, 
     programa = f"""
 import builtins
 import requests
-from core.motors import llama_cpp_engine
-llama_cpp_engine.libreria_instalada = lambda nombre: {libreria!r}
 def prohibido(*a, **kw):
     raise AssertionError("El arranque intentó descargar o comprobar conectividad")
 requests.get = prohibido
 import socket
 socket.create_connection = prohibido
 import bai
-entradas = iter(["estado", "ayuda", "recuerda que mi color es azul", "¿cuál es mi color?", "salir"])
-builtins.input = lambda *_: next(entradas)
+import time
+def entradas():
+    yield "estado"
+    yield "ayuda"
+    yield "recuerda que mi color es azul"
+    yield "¿cuál es mi color?"
+    from core.ai_engine import get_selector
+    limite = time.monotonic() + 5
+    while get_selector().estado_carga_local()["estado"] in ("preparando", "cancelando"):
+        assert time.monotonic() < limite
+        time.sleep(0.01)
+    yield "estado"
+    yield "salir"
+cola = entradas()
+builtins.input = lambda *_: next(cola)
 raise SystemExit(bai.main(["--sesion", "--offline", "--aislamiento", "python"]))
 """
     resultado = subprocess.run([sys.executable, "-c", programa], cwd=tmp_path,
                                capture_output=True, text=True, timeout=30)
     assert resultado.returncode == 0, resultado.stderr
-    assert "Modo degradado" in resultado.stderr
-    assert "--preparar-modelo" in resultado.stderr
+    assert "Modo degradado" in resultado.stdout
+    assert "--preparar-modelo" in resultado.stdout
     assert "Modo actual: OFFLINE" in resultado.stdout
     assert "Boli Artificial Intelligence" in resultado.stdout
     assert "azul" in resultado.stdout

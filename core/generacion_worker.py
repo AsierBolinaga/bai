@@ -10,8 +10,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+from time import monotonic
 
-from core.cancelacion import comprobar_cancelacion
+from core.cancelacion import comprobar_cancelacion, interrupcion_generacion
 from core.motors.base import MotorError
 
 ESPERA_TERMINAR = 0.3
@@ -58,29 +59,38 @@ class ProcesoMotor:
         self._lector = threading.Thread(target=leer, name="bai-motor-ipc", daemon=True)
         self._lector.start()
 
-    def ejecutar(self, modulo, config, mensajes=None, *, offline, avisar=print):
-        with self._lock:
+    def ejecutar(self, modulo, config, mensajes=None, *, offline, avisar=print,
+                 arranque=None, tiempo_maximo=None):
+        with self._lock, interrupcion_generacion(self._terminar) as comprobar_interrupcion:
             comprobar_cancelacion()
             if self._cerrando.is_set():
                 raise MotorError("El proceso del motor se está cerrando.")
-            self._iniciar()
-            proceso, eventos = self._proceso, self._eventos
-            peticion = json.dumps({
-                "modulo": modulo, "config": config, "mensajes": mensajes, "offline": offline,
-            }, ensure_ascii=True) + "\n"
-
-            def escribir():
-                try:
-                    proceso.stdin.write(peticion)
-                    proceso.stdin.flush()
-                except (OSError, ValueError) as error:
-                    eventos.put({"error": f"No se puede enviar la petición al motor: {error}"})
-
-            escritor = threading.Thread(target=escribir, name="bai-motor-envio", daemon=True)
-            escritor.start()
+            escritor = None
             try:
+                comprobar_interrupcion()
+                self._iniciar()
+                comprobar_interrupcion()
+                limite = None if tiempo_maximo is None else monotonic() + tiempo_maximo
+                proceso, eventos = self._proceso, self._eventos
+                peticion = json.dumps({
+                    "modulo": modulo, "config": config, "mensajes": mensajes, "offline": offline,
+                    "arranque": arranque,
+                }, ensure_ascii=True) + "\n"
+
+                def escribir():
+                    try:
+                        proceso.stdin.write(peticion)
+                        proceso.stdin.flush()
+                    except (OSError, ValueError) as error:
+                        eventos.put({"error": f"No se puede enviar la petición al motor: {error}"})
+
+                escritor = threading.Thread(target=escribir, name="bai-motor-envio", daemon=True)
+                escritor.start()
                 while True:
+                    comprobar_interrupcion()
                     comprobar_cancelacion()
+                    if limite is not None and monotonic() >= limite:
+                        raise MotorError(f"La preparación superó el plazo máximo de {tiempo_maximo} segundos.")
                     if self._cerrando.is_set():
                         raise MotorError("Generación interrumpida por el cierre del motor.")
                     try:
@@ -88,6 +98,7 @@ class ProcesoMotor:
                     except queue.Empty:
                         continue
                     comprobar_cancelacion()
+                    comprobar_interrupcion()
                     if not isinstance(respuesta, dict):
                         raise MotorError("Respuesta IPC del motor inválida.")
                     if "error" in respuesta:
@@ -97,13 +108,15 @@ class ProcesoMotor:
                         raise MotorError("Respuesta IPC del motor incompleta.")
                     for aviso in respuesta["avisos"]:
                         avisar(aviso)
+                    comprobar_interrupcion()
                     return respuesta["texto"]
             except BaseException:
                 # Incluye Ctrl+C: nunca dejar el motor o la CLI Copilot generando.
                 self._terminar()
                 raise
             finally:
-                escritor.join(timeout=ESPERA_TERMINAR)
+                if escritor is not None:
+                    escritor.join(timeout=ESPERA_TERMINAR)
 
     def _terminar(self):
         proceso = self._proceso
@@ -155,7 +168,20 @@ def servir(entrada=None, salida=None):
                 guardia = GuardiaRed() if peticion["offline"] else contextlib.nullcontext()
                 with guardia, avisos_contexto(avisos.append):
                     motor = importlib.import_module(peticion["modulo"])
-                    if peticion["mensajes"] is None:
+                    if peticion.get("arranque") is not None:
+                        if motor.TIPO != "offline":
+                            raise MotorError("El motor de arranque no es offline.")
+                        ok, motivo = motor.disponible(peticion["config"])
+                        if not ok:
+                            raise MotorError(
+                                f"{motivo}. Prepara el modelo con './bai.sh --preparar-modelo' "
+                                "si usas el Qwen predeterminado; para otros modelos revisa su configuración.")
+                        if peticion["config"].get("descargar_al_arrancar"):
+                            from core.preparar_modelo import preparar_modelo
+                            preparar_modelo(peticion["arranque"], salida=avisos.append)
+                            motor.cargar_modelo(peticion["config"])
+                        texto = None
+                    elif peticion["mensajes"] is None:
                         motor.cargar_modelo(peticion["config"])
                         texto = None
                     else:

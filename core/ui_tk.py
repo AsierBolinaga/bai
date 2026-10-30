@@ -7,6 +7,7 @@ y el resultado vuelve al hilo de Tk por una cola, nunca llamando a Tk desde el h
 import math
 import queue
 import threading
+import sys
 from time import monotonic
 import tkinter as tk
 from tkinter import font as tkfont
@@ -143,6 +144,10 @@ class VentanaBai:
         self._cerrando = False
         self._cerrada = False
         self._plazo_cierre = None
+        self._hilo_audio_cierre = None
+        self._cola_audio_cierre = queue.Queue()
+        self._resultado_audio_cierre = None
+        self._resultado_cierre = None
         self._hilo_turno = None
         self._reinicio = None
         self._voz = voz if voz is not None else VozLocal()
@@ -154,6 +159,7 @@ class VentanaBai:
         self._turno_pendiente = False
         self._construir()
         self._mostrar(nombre_ia, f"Hola, {master_name}. Memoria de sesión cargada.")
+        self._actualizar_carga_local()
         self.raiz.protocol("WM_DELETE_WINDOW", self.cerrar)
         self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
         self.raiz.bind("<Destroy>", self._al_destruir, add="+")
@@ -184,6 +190,17 @@ class VentanaBai:
             boton = self._boton(self.fila_botones, texto, lambda o=orden: self.enviar(o), COLORES["boton"])
             self.botones_barra.append(boton)
         self.barra.bind("<Configure>", self._reordenar_barra)
+        self.fila_carga = tk.Frame(self.barra, bg=COLORES["barra"])
+        self.fila_carga.columnconfigure(0, weight=1)
+        self.estado_carga = tk.Label(
+            self.fila_carga, anchor="w", justify="left", wraplength=220,
+            bg=COLORES["barra"], fg=COLORES["aviso"], font=FUENTE_UI)
+        self.estado_carga.grid(row=0, column=0, sticky="ew")
+        self.estado_carga.bind(
+            "<Configure>", lambda e: self.estado_carga.configure(wraplength=max(e.width - 4, 50)))
+        self.boton_cancelar_carga = self._boton(
+            self.fila_carga, "Cancelar carga", self.controlador.cancelar_carga_local, COLORES["boton"])
+        self.boton_cancelar_carga.grid(row=0, column=1, padx=(6, 0))
 
         # El pie se empaqueta antes que el chat para conservarse al encoger la ventana.
         pie = tk.Frame(self.raiz, bg=COLORES["fondo"], padx=10, pady=6)
@@ -319,7 +336,10 @@ class VentanaBai:
         self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
 
     def cancelar(self):
-        if self._cerrando or not self.controlador.ocupado:
+        if self._cerrando:
+            return
+        if not self.controlador.ocupado:
+            self.controlador.cancelar_carga_local()
             return
         self.controlador.cancelar()
         self.boton_cancelar.configure(state="disabled")
@@ -329,10 +349,15 @@ class VentanaBai:
         if self._cerrando:
             return
         self._cerrando = True
+        self._plazo_cierre = monotonic() + PLAZO_CIERRE_SEGUNDOS
         self.controlador.cancelar()
-        self._desactivar_escucha()
-        self._detener_voz()
-        self._voz.detener()
+        self.controlador.cancelar_carga_local()
+        self.boton_cancelar_carga.configure(state="disabled")
+        self._escucha_activada = self._escucha_en_curso = False
+        self._voz_activada = self._hablando = False
+        self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: OFF")
+        self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+        self.estado_escucha.configure(text="Escucha OFF")
         self.esfera.activar(False)
         self.entrada.configure(state="disabled")
         self.boton_enviar.configure(state="disabled")
@@ -340,8 +365,12 @@ class VentanaBai:
         for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
             boton.configure(state="disabled")
         self.idioma_escucha.configure(state="disabled")
-        self._mostrar("aviso", "Cerrando: cancelo la generación y guardo los turnos completados.", "aviso")
-        self._plazo_cierre = monotonic() + PLAZO_CIERRE_SEGUNDOS
+        self._mostrar("aviso", "Cerrando: cancelo la generación, cierro el audio y guardo los turnos completados.", "aviso")
+        if self._resultado_audio_cierre is not None and not self._resultado_audio_cierre[0]:
+            self._hilo_audio_cierre = None
+            self._resultado_audio_cierre = None
+        self._iniciar_cierre_audio()
+        self._resultado_cierre = None
         cola_cierre = self._cola_cierre = queue.Queue()
 
         # Esperar el cerrojo o el disco nunca debe bloquear el hilo de Tk.
@@ -355,12 +384,34 @@ class VentanaBai:
 
         threading.Thread(target=guardar, name="bai-ui-cierre", daemon=True).start()
 
+    def _iniciar_cierre_audio(self):
+        if self._hilo_audio_cierre is not None:
+            return
+        voz, escucha = self._voz, self._escucha
+        cola = self._cola_audio_cierre
+
+        def limpiar():
+            errores = []
+            for nombre, recurso in (("micrófono", escucha), ("voz", voz)):
+                try:
+                    recurso.detener()
+                except Exception as error:
+                    errores.append(f"{nombre}: {error}")
+            detalle = "; ".join(errores) or None
+            if detalle:
+                print(f"[B.A.I] No se pudo cerrar el audio: {detalle}", file=sys.stderr)
+            cola.put((not errores, detalle))
+
+        self._hilo_audio_cierre = threading.Thread(
+            target=limpiar, name="bai-ui-audio-cierre", daemon=True)
+        self._hilo_audio_cierre.start()
+
     def _al_destruir(self, evento):
         if evento.widget is self.raiz:
             self._cerrada = True
             self.controlador.cancelar()
-            self._escucha.detener()
-            self._voz.detener()
+            self.controlador.cancelar_carga_local()
+            self._iniciar_cierre_audio()
             self.raiz.after_cancel(self._temporizador_cola)
 
     def _alternar_voz(self):
@@ -463,21 +514,60 @@ class VentanaBai:
         self.raiz.mainloop()
 
     # ------------------------------------------------------------- presentación
+    def _actualizar_carga_local(self):
+        if self._cerrando:
+            return
+        estado = self.controlador.estado_carga_local()
+        for aviso in self.controlador.avisos_carga_local():
+            self._mostrar("aviso", aviso, "aviso")
+        if estado is None:
+            self.fila_carga.grid_remove()
+            return
+        self.fila_carga.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        textos = {
+            "preparando": "Preparando motor local… Ayuda y memoria disponibles.",
+            "cancelando": "Cancelando la preparación local…",
+            "listo": "Motor local disponible.",
+            "error": "Motor local no disponible. Consulta Estado.",
+        }
+        self.estado_carga.configure(text=textos[estado["estado"]])
+        if estado["estado"] == "preparando":
+            self.boton_cancelar_carga.configure(state="normal")
+            self.boton_cancelar_carga.grid()
+        else:
+            self.boton_cancelar_carga.grid_remove()
+
     def _vaciar_cola(self):
+        self._actualizar_carga_local()
         try:
-            guardado, error = self._cola_cierre.get_nowait()
+            self._resultado_audio_cierre = self._cola_audio_cierre.get_nowait()
         except queue.Empty:
             pass
-        else:
-            if guardado:
+        try:
+            self._resultado_cierre = self._cola_cierre.get_nowait()
+        except queue.Empty:
+            pass
+        if (self._cerrando and self._resultado_cierre is not None
+                and self._resultado_audio_cierre is not None):
+            guardado, error = self._resultado_cierre
+            audio_cerrado, error_audio = self._resultado_audio_cierre
+            if guardado and audio_cerrado:
                 self.raiz.destroy()
                 return
             self._cerrando = False
             self._plazo_cierre = None
             self._reinicio = None
-            self._mostrar("aviso", "No he podido guardar el historial al cerrar"
-                          + (f": {error}" if error else ". Revisa la consola.")
-                          + " La ventana sigue abierta; puedes reintentar el cierre.", "aviso")
+            if not guardado:
+                self._mostrar("aviso", "No he podido guardar el historial al cerrar"
+                              + (f": {error}" if error else ". Revisa la consola.")
+                              + " La ventana sigue abierta; puedes reintentar el cierre.", "aviso")
+            if not audio_cerrado:
+                self._mostrar("aviso", f"No he podido cerrar el audio: {error_audio}. "
+                              "La ventana sigue abierta; puedes reintentar el cierre.", "aviso")
+            # La ventana vuelve a poder activar audio: el proximo cierre debe limpiarlo.
+            self._hilo_audio_cierre = None
+            self._resultado_audio_cierre = None
+            self._cola_audio_cierre = queue.Queue()
             for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
                 boton.configure(state="normal")
             self.idioma_escucha.configure(state="readonly")
@@ -486,9 +576,10 @@ class VentanaBai:
             self._plazo_cierre = None
             if messagebox.askyesno(
                     "Cierre sin confirmar",
-                    "El guardado no ha confirmado el cierre en 3 segundos. "
-                    "¿Cerrar igualmente? Podrían perderse los últimos cambios no guardados. "
-                    "Si eliges No, seguiré esperando el guardado.",
+                    "El guardado o la limpieza de audio no han confirmado el cierre "
+                    f"en {PLAZO_CIERRE_SEGUNDOS:g} segundos. "
+                    "¿Cerrar igualmente? Podrían perderse cambios o quedar recursos sin cerrar. "
+                    "Si eliges No, seguiré esperando.",
                     parent=self.raiz):
                 self._reinicio = None
                 self.raiz.destroy()
@@ -570,4 +661,9 @@ def iniciar_ui(controlador=None, raiz=None, aviso_arranque=None):
     finally:
         if not ventana._cerrada:
             ventana.raiz.destroy()
+        if ventana._hilo_audio_cierre is not None:
+            ventana._hilo_audio_cierre.join(timeout=3)
+            if ventana._hilo_audio_cierre.is_alive():
+                ventana._reinicio = None
+                print("[B.A.I] La limpieza de audio sigue sin confirmar su cierre.", file=sys.stderr)
     return codigo_modo(ventana._reinicio) if ventana._reinicio is not None else 0

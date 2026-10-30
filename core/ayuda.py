@@ -21,6 +21,16 @@ siguen disponibles. Para descargarlo o verificarlo, cierra B.A.I. y ejecuta
 './bai.sh --preparar-modelo'. Esa acción explícita necesita red si falta el modelo,
 verifica tamaño y SHA256 y termina sin abrir el chat ni enviar conversaciones.
 Después inicia B.A.I. normalmente; cambiar a Online requiere tu autorización.
+Compruebo y, si está configurado, precargo el modelo en segundo plano, sin
+retrasar la apertura de la ventana ni la consola. La preparación tiene un máximo
+de 60 segundos más el tiempo acotado de terminar el proceso. Mientras tanto
+puedes usar ayuda, memoria y estado. Una pregunta al motor que sigue preparándose
+no se encola: vuelve a enviarla cuando esté disponible.
+La ventana muestra el estado y 'Cancelar carga'; Escape también cancela la
+preparación si no hay un turno de chat en curso. En ambas interfaces puedes
+escribir 'cancelar carga'. Cambiar a Online o cerrar cancela la preparación
+pendiente. Si falla, se cancela o agota el plazo, mantengo el modo degradado;
+reinicia para reintentar. No autorizo servicios online por un fallo local.
 
 DE OFFLINE A ONLINE: pulsa Online o escribe 'pasa a modo online'.
 Con aislamiento de proceso, ofrezco guardar y reiniciar antes de cambiar.
@@ -80,9 +90,12 @@ Cancelo el proceso del motor y descarto el turno interrumpido, sin probar otro
 motor ni añadir una respuesta parcial al historial. Puedes volver a preguntar;
 tras cancelar, el modelo local tendrá que cargarse de nuevo.
 Cerrar cancela la generación y guarda sólo los turnos completados, sin esperar
-a que responda el backend. Si el guardado no confirma el cierre en tres segundos,
-ofrezco cerrar sin confirmarlo (con riesgo de perder cambios) o seguir esperando.
-Si el guardado falla, la ventana queda abierta para reintentar.
+a que responda el backend. Guardo y cierro el audio en segundo plano, sin bloquear
+la ventana. Si alguna tarea no confirma el cierre en tres segundos, ofrezco cerrar
+sin confirmarla (con riesgo de perder cambios o dejar limpieza pendiente) o seguir
+esperando. Si alguna falla, la ventana queda abierta para reintentar.
+Tras salir de la ventana espero hasta otros tres segundos por la limpieza de
+audio; si no termina, lo aviso en consola y no reinicio automáticamente.
 En consola, Ctrl+C durante una respuesta la cancela; Ctrl+C en la entrada sale.
 Cancelar no deshace órdenes de memoria ya ejecutadas ni retira datos enviados
 online. Detengo el worker y sus hijos locales, pero no puedo garantizar que un

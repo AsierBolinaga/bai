@@ -219,6 +219,95 @@ finally:
             proceso.communicate(timeout=2)
 
 
+@pytest.mark.parametrize("fase", ["crear", "enviar", "recibir", "limpiar", "finalizar"])
+def test_ctrl_c_en_transiciones_no_deja_worker_y_restaura_handler(motor, fase):
+    modulo, config = motor
+    programa = f"""
+import os, signal, threading, time
+from core.generacion_worker import ProcesoMotor
+w = ProcesoMotor()
+iniciar = w._iniciar
+terminar = w._terminar
+fase = {fase!r}
+handler = signal.getsignal(signal.SIGINT)
+pids = []
+def interrumpir():
+    os.kill(os.getpid(), signal.SIGINT)
+thread_original = threading.Thread
+def thread(*a, **kw):
+    hilo = thread_original(*a, **kw)
+    if fase == 'finalizar' and kw.get('name') == 'bai-motor-envio':
+        join = hilo.join
+        def esperar(*args, **kwargs):
+            join(*args, **kwargs)
+            interrumpir()
+        hilo.join = esperar
+    return hilo
+threading.Thread = thread
+def crear():
+    iniciar()
+    pids.append(w._proceso.pid)
+    if fase == 'crear':
+        interrumpir()
+    elif fase == 'enviar':
+        stdin = w._proceso.stdin
+        class Entrada:
+            def write(self, texto):
+                interrumpir()
+                return stdin.write(texto)
+            def flush(self):
+                return stdin.flush()
+            def close(self):
+                return stdin.close()
+        w._proceso.stdin = Entrada()
+    elif fase in ('recibir', 'limpiar'):
+        eventos = w._eventos
+        class Eventos:
+            def get(self, **kw):
+                interrumpir()
+                return eventos.get(**kw)
+        w._eventos = Eventos()
+def limpiar():
+    if fase == 'limpiar':
+        interrumpir()
+        interrumpir()
+    terminar()
+w._iniciar = crear
+w._terminar = limpiar
+try:
+    try:
+        w.ejecutar({modulo.__name__!r}, {config!r},
+                   [{{"role": "user", "content": "nueva"}}], offline=True,
+                   avisar=lambda a: None)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError('no se recibio Ctrl+C')
+    assert w._proceso is None
+    assert signal.getsignal(signal.SIGINT) == handler
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError('worker sigue vivo')
+    w._iniciar, w._terminar = iniciar, terminar
+    threading.Thread = thread_original
+    print(w.ejecutar({modulo.__name__!r}, {config!r},
+                    [{{"role": "user", "content": "siguiente"}}], offline=True,
+                    avisar=lambda a: None), flush=True)
+finally:
+    threading.Thread = thread_original
+    w._terminar = terminar
+    w.cerrar()
+"""
+    resultado = subprocess.run([sys.executable, "-c", programa], capture_output=True,
+                               text=True, timeout=8)
+    assert resultado.returncode == 0, resultado.stderr
+    assert ":1:siguiente" in resultado.stdout
+
+
 def test_lanzador_real_ctrl_c_cancela_sin_matar_sesion(tmp_path):
     import yaml
     from config.motors_config import PROJECT_ROOT
@@ -256,17 +345,38 @@ class Llama:
 """)
     proceso = subprocess.Popen(
         [sys.executable, str(tmp_path / "bai.py"), "--offline", "--aislamiento", "python"],
-        cwd=tmp_path, env=dict(os.environ, PYTHONPATH=str(tmp_path)), start_new_session=True,
+        cwd=tmp_path, env=dict(os.environ, PYTHONPATH=str(tmp_path), PYTHONUNBUFFERED="1"),
+        start_new_session=True,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lineas = []
+    disponible = threading.Event()
+
+    def leer():
+        for linea in proceso.stdout:
+            lineas.append(linea)
+            if "OK offline" in linea:
+                disponible.set()
+
+    lector = threading.Thread(target=leer, daemon=True)
+    lector.start()
     pid_motor = None
     try:
+        limite = time.monotonic() + 5
+        while not disponible.wait(0.05):
+            assert time.monotonic() < limite, "".join(lineas)
+            proceso.stdin.write("estado\n")
+            proceso.stdin.flush()
         proceso.stdin.write("bloquear\n")
         proceso.stdin.flush()
         pid_motor, = esperar_marca({"marca": str(marca)})
         os.killpg(proceso.pid, signal.SIGINT)
         proceso.stdin.write("nueva\nsalir\n")
         proceso.stdin.flush()
-        salida, error = proceso.communicate(timeout=10)
+        proceso.stdin.close()
+        proceso.wait(timeout=10)
+        lector.join(timeout=2)
+        assert not lector.is_alive()
+        salida, error = "".join(lineas), proceso.stderr.read()
         assert proceso.returncode == 0, error
         assert "Generación cancelada" in salida and "respuesta sintetica" in salida
         assert not ejecutando(pid_motor)
@@ -277,7 +387,12 @@ class Llama:
     finally:
         if proceso.poll() is None:
             os.killpg(proceso.pid, signal.SIGKILL)
-            proceso.communicate(timeout=2)
+            proceso.wait(timeout=2)
+        lector.join(timeout=2)
+        proceso.stdout.close()
+        proceso.stderr.close()
+        if not proceso.stdin.closed:
+            proceso.stdin.close()
         if pid_motor is not None and ejecutando(pid_motor):
             os.killpg(pid_motor, signal.SIGKILL)
 

@@ -1,6 +1,6 @@
 from core.config import nombre_ia, master_name
 from core.memory_engine import save_chat_history, load_full_history
-from core.ai_engine import ask, describir_estado
+from core.ai_engine import ask, describir_estado, get_selector
 from core.reinicio import aviso_reinicio, codigo_modo, modo_reinicio
 from copy import deepcopy
 
@@ -10,10 +10,15 @@ def run_assistant():
     print(f"[{nombre_ia}] Hola, {master_name}. Memoria de sesión cargada.")
     print(f"[{nombre_ia}] {describir_estado()}")
     print(f"[{nombre_ia}] Comandos: 'pasa a modo offline' | 'pasa a modo online' | 'estado' | 'ayuda'")
+    if get_selector().estado_carga_local() is not None:
+        print(f"[{nombre_ia}] Preparación local en segundo plano. 'cancelar carga' la interrumpe; "
+              "'estado' muestra su situación. Puedes usar ayuda y memoria mientras tanto.")
     print(f"[{nombre_ia}] Memoria: 'recuerda que X es Y' | '¿qué recuerdas?' | 'recuerda que ahora X es Z' | 'olvida X'")
 
     while True:
         try:
+            for aviso in get_selector().avisos_carga_local():
+                print(f"[{nombre_ia}] {aviso}")
             user_input = input("bai> ").strip()
             modo = modo_reinicio(user_input)
             if modo is not None:

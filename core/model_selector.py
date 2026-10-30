@@ -41,6 +41,7 @@ definido en core/motors/base.py y el registro de core/motors/registry.py.
 """
 import os
 import socket
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 
 from config.motors_config import MODOS_VALIDOS, PRIORIDADES_VALIDAS, cargar_motors_config
@@ -116,6 +117,7 @@ class ModelSelector:
 
     def __init__(self, config=None, comprobar_conexion=None, obtener_motor=None):
         self._worker = None
+        self._carga_local = None
         self.config = config if config is not None else cargar_motors_config()
         self._comprobar_conexion = comprobar_conexion or hay_conexion
         self._obtener_motor = obtener_motor or registry.obtener_motor
@@ -138,6 +140,8 @@ class ModelSelector:
                 "Esta sesión está aislada de la red a nivel de proceso: el modo online no es posible. "
                 "Para autorizar servicios online reinicia B.A.I con `python bai.py --online`.")
         self._modo = modo
+        if modo == "online":
+            self.cancelar_carga_local()
         self._aplicar_guardia_sesion()
         return self._modo
 
@@ -172,12 +176,35 @@ class ModelSelector:
     def cerrar(self):
         """Libera la guardia de sesión (p. ej. al terminar de usar un selector temporal)."""
         try:
-            if self._worker is not None:
-                self._worker.cerrar()
+            try:
+                if self._carga_local is not None:
+                    self._carga_local.cerrar()
+            finally:
+                if self._worker is not None:
+                    self._worker.cerrar()
         finally:
             if self._guardia_sesion is not None:
                 self._guardia_sesion.desactivar()
                 self._guardia_sesion = None
+
+    def iniciar_carga_local(self):
+        from core.carga_local import CargaLocal
+        if self._carga_local is not None:
+            return
+        nombre = self.config["offline"]["motor"]
+        modulo = registry.motores_registrados().get(nombre)
+        self._carga_local = CargaLocal(self.config, modulo)
+        self._carga_local.iniciar()
+
+    def estado_carga_local(self):
+        return None if self._carga_local is None else self._carga_local.estado()
+
+    def avisos_carga_local(self):
+        return [] if self._carga_local is None else self._carga_local.recoger_avisos()
+
+    def cancelar_carga_local(self):
+        if self._carga_local is not None:
+            self._carga_local.cancelar()
 
     def activar_worker(self):
         """Aisla la inferencia de la sesion; los selectores inyectados pueden ser sincronos."""
@@ -263,6 +290,12 @@ class ModelSelector:
         """
         if candidato.nombre in self._errores_arranque:
             return None, self._errores_arranque[candidato.nombre]
+        if (self._carga_local is not None and candidato.tipo == "offline"
+                and candidato.nombre == self._carga_local.nombre):
+            estado = self._carga_local.estado()
+            if estado["estado"] != "listo":
+                return None, estado["detalle"]
+            return SimpleNamespace(__name__=self._carga_local.modulo), ""
         try:
             modulo = self._obtener_motor(candidato.nombre)
         except MotorNoDisponible as e:
@@ -311,6 +344,11 @@ class ModelSelector:
     def _generar(self, modulo, candidato, messages):
         """Invoca al motor. Los motores offline se ejecutan bajo GuardiaRed."""
         mensajes = recortar_mensajes(messages, candidato.max_mensajes)
+        if (self._carga_local is not None and candidato.tipo == "offline"
+                and candidato.nombre == self._carga_local.nombre):
+            return self._carga_local.worker.ejecutar(
+                modulo.__name__, candidato.config, mensajes,
+                offline=True, avisar=notificar_contexto)
         if self._worker is not None:
             return self._worker.ejecutar(
                 modulo.__name__, candidato.config, mensajes,

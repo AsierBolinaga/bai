@@ -51,6 +51,18 @@ class ControladorChat:
     def estado_completo(self):
         return self._describir()
 
+    def estado_carga_local(self):
+        from core.ai_engine import get_selector
+        return get_selector().estado_carga_local()
+
+    def avisos_carga_local(self):
+        from core.ai_engine import get_selector
+        return get_selector().avisos_carga_local()
+
+    def cancelar_carga_local(self):
+        from core.ai_engine import get_selector
+        get_selector().cancelar_carga_local()
+
     @property
     def ocupado(self):
         return self._cerrojo.locked()
@@ -139,6 +151,7 @@ class ControladorChat:
     def cerrar(self):
         """Cancela y guarda los turnos completados, sin esperar al backend."""
         self.cancelar()
+        self.cancelar_carga_local()
         with self._estado_lock:
             historial = deepcopy(self.historial)
         return self._guardar_copia(historial)
