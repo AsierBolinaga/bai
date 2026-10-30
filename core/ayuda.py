@@ -97,6 +97,9 @@ esperando. Si alguna falla, la ventana queda abierta para reintentar.
 Tras salir de la ventana espero hasta otros tres segundos por la limpieza de
 audio; si no termina, lo aviso en consola y no reinicio automáticamente.
 En consola, Ctrl+C durante una respuesta la cancela; Ctrl+C en la entrada sale.
+Las pausas, cambios de idioma y botones de audio se procesan en segundo plano
+y en orden. No envío la pregunta ni inicio la lectura si falla su pausa previa.
+Puedes cancelar también una pregunta que aún espera la preparación del audio.
 Cancelar no deshace órdenes de memoria ya ejecutadas ni retira datos enviados
 online. Detengo el worker y sus hijos locales, pero no puedo garantizar que un
 servidor remoto deje de calcular o facturar una petición que ya recibió.

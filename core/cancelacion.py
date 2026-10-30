@@ -32,19 +32,24 @@ def cancelacion_turno(evento):
 @contextmanager
 def interrupcion_generacion(al_cancelar):
     """Difiere Ctrl+C hasta un punto seguro y protege la limpieza de repeticiones."""
-    interrumpido = Event()
+    interrumpido = False
+
+    def interrumpir(*_):
+        nonlocal interrumpido
+        # Un handler puede interrumpirse a si mismo: no adquirir cerrojos aqui.
+        interrumpido = True
 
     def comprobar():
-        if interrumpido.is_set():
+        if interrumpido:
             raise KeyboardInterrupt()
 
     principal = threading.current_thread() is threading.main_thread()
     if principal:
-        anterior = signal.signal(signal.SIGINT, lambda *_: interrumpido.set())
+        anterior = signal.signal(signal.SIGINT, interrumpir)
     try:
         yield comprobar
         # Una señal pudo llegar al completar el turno o esperar al escritor.
-        if interrumpido.is_set():
+        if interrumpido:
             al_cancelar()
             raise KeyboardInterrupt()
     finally:

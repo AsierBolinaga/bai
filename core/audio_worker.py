@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from core.procesos import esperar_grupo
 
 ESPERA_CIERRE_AUDIO = 0.5
 
@@ -18,6 +19,7 @@ class ProcesoAudio:
         self.proceso = None
         self._errores = None
         self._hilo = None
+        self._escritor = None
         self._eventos = queue.Queue()
         self._id = 0
         self._pausa = threading.Event()
@@ -70,8 +72,29 @@ class ProcesoAudio:
         if self.proceso is None or self.proceso.poll() is not None:
             raise RuntimeError("El worker de audio no está disponible; desactiva y activa la función.")
         self._id += 1
-        self.proceso.stdin.write(json.dumps([self._id, orden, contenido], ensure_ascii=True) + "\n")
-        self.proceso.stdin.flush()
+        proceso = self.proceso
+        mensaje = json.dumps([self._id, orden, contenido], ensure_ascii=True) + "\n"
+        resultado = queue.Queue()
+
+        def escribir():
+            try:
+                proceso.stdin.write(mensaje)
+                proceso.stdin.flush()
+            except (OSError, ValueError) as error:
+                resultado.put(error)
+            else:
+                resultado.put(None)
+
+        escritor = self._escritor = threading.Thread(target=escribir, name="bai-audio-envio", daemon=True)
+        escritor.start()
+        try:
+            error = resultado.get(timeout=ESPERA_CIERRE_AUDIO)
+        except queue.Empty:
+            self.cerrar()
+            raise RuntimeError("El canal de audio no confirmó el envío; se ha cerrado el worker.")
+        if error is not None:
+            self.cerrar()
+            raise RuntimeError(f"No se pudo enviar la orden de audio: {error}") from error
 
     def cancelar(self):
         if self.proceso is not None and self.proceso.poll() is None:
@@ -83,6 +106,7 @@ class ProcesoAudio:
                     self._eventos.put((0, "error", "El worker no confirmó la pausa; se ha cerrado por seguridad."))
             except (OSError, RuntimeError) as error:
                 self._eventos.put((0, "error", f"No se ha podido pausar audio: {error}"))
+                raise RuntimeError(f"No se ha podido pausar audio: {error}") from error
         else:
             self._id += 1
 
@@ -113,13 +137,19 @@ class ProcesoAudio:
                 self.proceso.wait(timeout=ESPERA_CIERRE_AUDIO)
             except subprocess.TimeoutExpired as error:
                 raise RuntimeError("El proceso de audio no confirmó su cierre.") from error
+            esperar_grupo(self.proceso.pid, ESPERA_CIERRE_AUDIO)
             self._hilo.join(timeout=ESPERA_CIERRE_AUDIO)
             if self._hilo.is_alive():
                 raise RuntimeError("El canal de audio no terminó tras cerrar el proceso.")
+            if self._escritor is not None:
+                self._escritor.join(timeout=ESPERA_CIERRE_AUDIO)
+                if self._escritor.is_alive():
+                    raise RuntimeError("El envío de audio no terminó tras cerrar el proceso.")
             self.proceso.stdin.close()
             self.proceso.stdout.close()
             self._errores.close()
             self.proceso = self._errores = self._hilo = None
+            self._escritor = None
         self._eventos = queue.Queue()
 
 

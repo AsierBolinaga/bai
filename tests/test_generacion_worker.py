@@ -15,6 +15,7 @@ import pytest
 from core.cancelacion import GeneracionCancelada, cancelacion_turno
 from core.generacion_worker import ProcesoMotor
 from core.motors.base import MotorError
+from core.procesos import estado_grupo
 
 
 @pytest.fixture
@@ -125,7 +126,7 @@ def test_cancelar_mata_backend_y_sus_hijos_y_permite_otro_turno(worker, motor, o
     hilo.join(2)
     assert not hilo.is_alive() and resultado == ["cancelada"]
     assert time.monotonic() - inicio < 1.5
-    assert not ejecutando(pid) and not ejecutando(hijo)
+    assert not ejecutando(pid) and not ejecutando(hijo), estado_grupo(pid)
     texto = worker.ejecutar(modulo.__name__, config, [{"role": "user", "content": "nueva"}],
                             offline=offline, avisar=lambda a: None)
     assert texto.endswith(":1:nueva") and int(texto.split(":")[0]) != pid
@@ -149,7 +150,7 @@ def test_cerrar_interrumpe_backend_que_ignora_sigterm(worker, motor):
     worker.cerrar()
     hilo.join(1)
     assert time.monotonic() - inicio < 1.5 and not hilo.is_alive()
-    assert errores and not ejecutando(pid) and not ejecutando(hijo)
+    assert errores and not ejecutando(pid) and not ejecutando(hijo), (errores, estado_grupo(pid))
 
 
 def test_guardia_offline_del_hijo_descarta_respuesta_tras_intento_de_red(worker, motor):
@@ -306,6 +307,35 @@ finally:
                                text=True, timeout=8)
     assert resultado.returncode == 0, resultado.stderr
     assert ":1:siguiente" in resultado.stdout
+
+
+def test_handler_ctrl_c_no_adquiere_cerrojo_reentrante():
+    programa = """
+import os, signal, threading
+from core import cancelacion
+class EventoConSenalAnidada(threading.Event):
+    def set(self):
+        with self._cond:
+            os.kill(os.getpid(), signal.SIGINT)
+            self._flag = True
+            self._cond.notify_all()
+cancelacion.Event = EventoConSenalAnidada
+anterior = signal.getsignal(signal.SIGINT)
+try:
+    with cancelacion.interrupcion_generacion(lambda: None) as comprobar:
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+        comprobar()
+except KeyboardInterrupt:
+    assert signal.getsignal(signal.SIGINT) == anterior
+    print("cancelado sin bloqueo")
+else:
+    raise AssertionError("no se recibio Ctrl+C")
+"""
+    resultado = subprocess.run([sys.executable, "-c", programa], capture_output=True,
+                               text=True, timeout=3)
+    assert resultado.returncode == 0, resultado.stderr
+    assert "cancelado sin bloqueo" in resultado.stdout
 
 
 def test_lanzador_real_ctrl_c_cancela_sin_matar_sesion(tmp_path):

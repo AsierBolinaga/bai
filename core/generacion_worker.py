@@ -14,6 +14,7 @@ from time import monotonic
 
 from core.cancelacion import comprobar_cancelacion, interrupcion_generacion
 from core.motors.base import MotorError
+from core.procesos import esperar_grupo
 
 ESPERA_TERMINAR = 0.3
 
@@ -133,6 +134,10 @@ class ProcesoMotor:
             except subprocess.TimeoutExpired:
                 if senal == signal.SIGKILL:
                     raise MotorError("El sistema no confirmó el cierre del proceso del motor.")
+        try:
+            esperar_grupo(proceso.pid, ESPERA_TERMINAR)
+        except (OSError, RuntimeError) as error:
+            raise MotorError(f"No se pudo confirmar la limpieza del motor: {error}") from error
         self._lector.join(timeout=ESPERA_TERMINAR)
         if self._lector.is_alive():
             raise MotorError("El canal del motor no terminó tras cerrar el proceso.")

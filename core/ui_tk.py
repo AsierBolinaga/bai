@@ -19,6 +19,7 @@ from core.ayuda import DESCRIPCION_BAI
 from core.ui_controlador import ControladorChat, MENSAJE_CANCELADO
 from core.voz import VozLocal
 from core.escucha import EscuchaLocal
+from core.audio_operaciones import OperacionesAudio
 
 INTERVALO_COLA_MS = 100
 PLAZO_CIERRE_SEGUNDOS = 3
@@ -148,6 +149,9 @@ class VentanaBai:
         self._cola_audio_cierre = queue.Queue()
         self._resultado_audio_cierre = None
         self._resultado_cierre = None
+        self._audio = OperacionesAudio()
+        self._version_voz = self._version_escucha = self._version_turno = 0
+        self._sondeo_audio_pendiente = False
         self._hilo_turno = None
         self._reinicio = None
         self._voz = voz if voz is not None else VozLocal()
@@ -310,7 +314,7 @@ class VentanaBai:
 
     # ---------------------------------------------------------------- acciones
     def enviar(self, texto=None):
-        if self._cerrando or self.controlador.ocupado:
+        if self._cerrando or self.controlador.ocupado or self._turno_pendiente:
             return
         if texto is None:
             texto = self.entrada.get().strip()
@@ -318,10 +322,10 @@ class VentanaBai:
                 self.entrada.delete(0, "end")
         if not texto:
             return
-        self._pausar_escucha()
         from core.reinicio import aviso_reinicio, modo_reinicio
         modo = modo_reinicio(texto)
         if modo is not None:
+            self._pausar_escucha()
             if messagebox.askyesno("Cambiar de modo", aviso_reinicio(modo), parent=self.raiz):
                 self._reinicio = modo
                 self.cerrar()
@@ -329,16 +333,45 @@ class VentanaBai:
         if texto.lower() in ("salir", "exit", "quit", "irten", "atera", "amaitu"):
             self.cerrar()
             return
-        self._detener_voz()
+        self._marcar_pausa_escucha()
+        self._version_voz += 1
+        self._hablando = False
         self._mostrar(master_name, texto)
         self._bloquear(True)
         self._turno_pendiente = True
-        self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
+        self._version_turno += 1
+        version = self._version_turno
+
+        def enviar_tras_pausa(_valor, error):
+            if version != self._version_turno:
+                return
+            if error:
+                self._turno_pendiente = False
+                self._bloquear(False)
+                self._mostrar("aviso", f"No he podido preparar el audio para enviar: {error}", "aviso")
+                self._voz_activada = self._hablando = False
+                self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+                self._desactivar_escucha()
+                self._limpiar_error_audio("voz")
+                return
+            self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
+
+        def preparar():
+            self._escucha.pausar()
+            self._voz.pausar()
+
+        self._audio.enviar(preparar, enviar_tras_pausa)
 
     def cancelar(self):
         if self._cerrando:
             return
         if not self.controlador.ocupado:
+            if self._turno_pendiente:
+                self._version_turno += 1
+                self._turno_pendiente = False
+                self._bloquear(False)
+                self._mostrar("aviso", MENSAJE_CANCELADO, "aviso")
+                return
             self.controlador.cancelar_carga_local()
             return
         self.controlador.cancelar()
@@ -349,6 +382,8 @@ class VentanaBai:
         if self._cerrando:
             return
         self._cerrando = True
+        self._version_turno += 1
+        self._turno_pendiente = False
         self._plazo_cierre = monotonic() + PLAZO_CIERRE_SEGUNDOS
         self.controlador.cancelar()
         self.controlador.cancelar_carga_local()
@@ -402,9 +437,7 @@ class VentanaBai:
                 print(f"[B.A.I] No se pudo cerrar el audio: {detalle}", file=sys.stderr)
             cola.put((not errores, detalle))
 
-        self._hilo_audio_cierre = threading.Thread(
-            target=limpiar, name="bai-ui-audio-cierre", daemon=True)
-        self._hilo_audio_cierre.start()
+        self._hilo_audio_cierre = self._audio.cerrar(limpiar)
 
     def _al_destruir(self, evento):
         if evento.widget is self.raiz:
@@ -417,33 +450,61 @@ class VentanaBai:
     def _alternar_voz(self):
         if self._cerrando:
             return
-        if not self._voz_activada and not self._voz.disponible:
-            self._mostrar("aviso", f"Voz local no disponible. {self._voz.motivo_no_disponible}", "aviso")
-            return
-        if not self._voz_activada:
-            try:
-                self._voz.activar()
-            except (OSError, RuntimeError, ValueError) as error:
-                self._mostrar("aviso", f"No se ha podido activar la voz: {error}", "aviso")
-                return
         self._voz_activada = not self._voz_activada
+        self._version_voz += 1
+        version = self._version_voz
         self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: ON" if self._voz_activada else "Voz: OFF")
-        if not self._voz_activada:
-            self._detener_voz()
-            self._voz.detener()
+        if self._voz_activada:
+            def activar():
+                if not self._voz.disponible:
+                    raise RuntimeError(f"Voz local no disponible. {self._voz.motivo_no_disponible}")
+                self._voz.activar()
+            self._operar_audio(activar, "voz", version)
+        else:
+            self._hablando = False
+            self._operar_audio(self._voz.detener, "voz", version)
             self.esfera.activar(self.controlador.ocupado)
 
+    def _operar_audio(self, operacion, recurso, version):
+        def terminado(_valor, error):
+            if error:
+                self._mostrar("aviso", f"Error de {recurso}: {error}", "aviso")
+                if version == getattr(self, f"_version_{recurso}"):
+                    if recurso == "voz":
+                        self._voz_activada = self._hablando = False
+                        self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+                        self.esfera.activar(self.controlador.ocupado)
+                    else:
+                        self._escucha_activada = self._escucha_en_curso = False
+                        self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: OFF")
+                        self.estado_escucha.configure(text="Escucha OFF")
+                    if operacion != getattr(self, f"_{recurso}").detener:
+                        self._limpiar_error_audio(recurso)
+        self._audio.enviar(operacion, terminado)
+
+    def _limpiar_error_audio(self, recurso):
+        def terminado(_valor, error):
+            if error:
+                self._mostrar("aviso", f"No he podido liberar {recurso} tras el error: {error}", "aviso")
+        self._audio.enviar(getattr(self, f"_{recurso}").detener, terminado)
+
     def _detener_voz(self):
-        self._voz.pausar()
+        self._version_voz += 1
         self._hablando = False
+        self._operar_audio(self._voz.pausar, "voz", self._version_voz)
 
     def _leer(self, texto):
-        self._pausar_escucha()
-        try:
-            self._voz.hablar(texto)
-        except (OSError, RuntimeError, ValueError) as error:
-            self._mostrar("aviso", f"No se ha podido iniciar la voz: {error}", "aviso")
-            return
+        self._marcar_pausa_escucha()
+        self._version_voz += 1
+        version = self._version_voz
+
+        def leer():
+            self._escucha.pausar()
+            if (version == self._version_voz and self._voz_activada
+                    and not self._cerrando and not self._cerrada):
+                self._voz.hablar(texto)
+
+        self._operar_audio(leer, "voz", self._version_voz)
         self._hablando = True
         self.esfera.activar(True, hablando=True)
 
@@ -467,15 +528,20 @@ class VentanaBai:
         self._actualizar_escucha()
 
     def _pausar_escucha(self):
-        self._escucha.pausar()
+        self._marcar_pausa_escucha()
+        self._operar_audio(self._escucha.pausar, "escucha", self._version_escucha)
+
+    def _marcar_pausa_escucha(self):
+        self._version_escucha += 1
         self._escucha_en_curso = False
         if self._escucha_activada:
             self.estado_escucha.configure(text="Pausada")
 
     def _desactivar_escucha(self):
         self._escucha_activada = False
-        self._pausar_escucha()
-        self._escucha.detener()
+        self._version_escucha += 1
+        self._escucha_en_curso = False
+        self._operar_audio(self._escucha.detener, "escucha", self._version_escucha)
         self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: OFF")
         self.estado_escucha.configure(text="Escucha OFF")
 
@@ -487,15 +553,23 @@ class VentanaBai:
                 self._pausar_escucha()
             return
         if not self._escucha_en_curso:
-            try:
-                self._escucha.iniciar(IDIOMAS_ESCUCHA[self.idioma_escucha.get()])
-            except (OSError, RuntimeError, ValueError) as error:
-                self._desactivar_escucha()
-                self._mostrar("aviso", f"No se ha podido activar el micrófono: {error}", "aviso")
-                return
+            idioma = IDIOMAS_ESCUCHA[self.idioma_escucha.get()]
+            self._version_escucha += 1
+            version = self._version_escucha
+
+            def iniciar():
+                if (version == self._version_escucha and self._escucha_activada
+                        and not self._cerrando and not self._cerrada):
+                    self._escucha.pausar()
+                    if version == self._version_escucha:
+                        self._escucha.iniciar(idioma)
+
+            self._operar_audio(iniciar, "escucha", version)
             self._escucha_en_curso = True
             self.estado_escucha.configure(text="Preparando micrófono…")
-        for tipo, texto in self._escucha.comprobar():
+
+    def _eventos_escucha(self, eventos):
+        for tipo, texto in eventos:
             if tipo == "estado":
                 self.estado_escucha.configure(text=texto)
             elif tipo == "error":
@@ -509,6 +583,47 @@ class VentanaBai:
                 self._desactivar_escucha()
                 self._mostrar("aviso", "La escucha terminó sin una transcripción. Vuelve a activarla.", "aviso")
                 return
+
+    def _sondear_audio(self):
+        if self._sondeo_audio_pendiente or self._cerrando:
+            return
+        voz, escucha = self._voz_activada, self._escucha_activada and self._escucha_en_curso
+        if not voz and not escucha:
+            return
+        versiones = self._version_voz, self._version_escucha
+        self._sondeo_audio_pendiente = True
+
+        def consultar():
+            return (self._voz.comprobar() if voz else None,
+                    self._voz.recoger_avisos() if voz else [],
+                    self._escucha.comprobar() if escucha else [])
+
+        def recibido(valor, error):
+            self._sondeo_audio_pendiente = False
+            if error:
+                self._mostrar("aviso", f"No he podido consultar el audio: {error}", "aviso")
+                self._desactivar_escucha()
+                self._voz_activada = self._hablando = False
+                self._operar_audio(self._voz.detener, "voz", self._version_voz)
+                self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+                return
+            estado_voz, avisos, eventos = valor
+            if versiones[0] == self._version_voz and self._voz_activada and estado_voz is not None:
+                for aviso in avisos:
+                    self._mostrar("aviso", aviso, "aviso")
+                activo, error_voz = estado_voz
+                if not activo:
+                    self._hablando = False
+                    self.esfera.activar(self.controlador.ocupado)
+                    if error_voz:
+                        self._mostrar("aviso", error_voz, "aviso")
+                        self._voz_activada = False
+                        self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+                        self._operar_audio(self._voz.detener, "voz", self._version_voz)
+            if versiones[1] == self._version_escucha and self._escucha_activada:
+                self._eventos_escucha(eventos)
+
+        self._audio.enviar(consultar, recibido)
 
     def ejecutar(self):
         self.raiz.mainloop()
@@ -538,6 +653,15 @@ class VentanaBai:
             self.boton_cancelar_carga.grid_remove()
 
     def _vaciar_cola(self):
+        if not self._cerrando:
+            try:
+                while True:
+                    callback, valor, error = self._audio.resultados.get_nowait()
+                    callback(valor, error)
+                    if self._cerrando:
+                        break
+            except queue.Empty:
+                pass
         self._actualizar_carga_local()
         try:
             self._resultado_audio_cierre = self._cola_audio_cierre.get_nowait()
@@ -568,6 +692,8 @@ class VentanaBai:
             self._hilo_audio_cierre = None
             self._resultado_audio_cierre = None
             self._cola_audio_cierre = queue.Queue()
+            self._audio = OperacionesAudio()
+            self._sondeo_audio_pendiente = False
             for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
                 boton.configure(state="normal")
             self.idioma_escucha.configure(state="readonly")
@@ -589,19 +715,8 @@ class VentanaBai:
                 self._pintar_turno(self._cola.get_nowait())
         except queue.Empty:
             pass
-        if self._voz_activada:
-            activo, error = self._voz.comprobar()
-            for aviso in self._voz.recoger_avisos():
-                self._mostrar("aviso", aviso, "aviso")
-            if not activo:
-                self._hablando = False
-                self.esfera.activar(self.controlador.ocupado)
-                if error:
-                    self._mostrar("aviso", error, "aviso")
-                    self._voz_activada = False
-                    self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
-                    self._voz.detener()
         self._actualizar_escucha()
+        self._sondear_audio()
         self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
 
     def _pintar_turno(self, turno):

@@ -446,20 +446,36 @@ keeps the window open with a visible error so the user can retry.
 
 Audio workers have their own process groups. Teardown uses bounded 0.5-second
 process waits and reader-thread joins, with a final group kill to remove any
-remaining player. Creating a player and registering its cancellation callback
+remaining player. Motor and audio teardown also inspect their own Linux process
+group until no member is running, with a bounded confirmation wait. Sending a
+signal and reaping the leader alone are not considered sufficient confirmation.
+Zombie entries are reported separately: they no longer execute, but their
+collection by their parent is not certified. Failure to inspect or stop the group
+is an explicit error, not a successful close. Creating a player and registering its cancellation callback
 are atomic with respect to pausing; a pause cannot be acknowledged between them.
 Window destruction schedules cleanup only once. After Tk's main loop exits,
 the application waits at most another three seconds for audio cleanup; if it is
 still unconfirmed it reports the problem and suppresses restart. These bounds
 are not a hard operating-system exit deadline for disk or kernel failures.
-Normal-use audio pauses and OFF toggles remain synchronous; this change removes
-audio waiting from window closing/destruction, not every audio interaction.
+Normal-use audio activation, pauses, language changes, playback, polling and OFF
+toggles run through one serial background queue, never waiting on Tk. Sending a
+message waits for both audio pauses in that queue before starting generation;
+playback waits for the microphone pause, and a language change pauses capture
+before restarting it. Failed preparation does not send the message or start
+playback. Versioned results discard stale transcriptions and playback state.
+Cancellation also works while a message is waiting for its audio pauses, without
+adding it to history. Closing discards queued operations and cleans up after the
+operation already running, rather than racing that operation from a second thread.
+An unresponsive audio input pipe has a bounded send timeout; a failed pause or
+cleanup remains visible. The three-second closing confirmation still applies if
+an active operation has not released audio.
 
 In the console, **Ctrl+C during a response** cancels the request and returns to
 the prompt; **Ctrl+C at the prompt** saves history and exits. The supervisor lets
 the session handle that interrupt instead of killing it. During worker execution,
 Ctrl+C is deferred to safe checkpoints, including worker creation, request
-transmission and final writer cleanup. Repeated interrupts do not interrupt
+transmission and final writer cleanup. The signal handler only changes a boolean;
+it acquires no lock that a nested signal could deadlock. Repeated interrupts do not interrupt
 process teardown, and the previous signal handler is restored afterwards.
 Cancellation does not
 undo memory commands that already wrote facts, withdraw context already sent
@@ -931,6 +947,38 @@ Cancellation and audio closing stabilization checkpoint (2026-10-30):
 - No new physical microphone/playback or authorized online acceptance test was
   performed. Silence defaults remain 5 seconds for listening and 3 seconds
   before playback; phase 9 and the real-use checks above remain open.
+
+Follow-up findings and validation scope (2026-10-30):
+
+- A separate execution reported by the user had **1,285 passed, 61 skipped and
+  5 failed**: two player `/proc` existence assertions, one motor shutdown
+  assertion (also failing in isolation), one launcher Ctrl+C failure (passing
+  when retried alone), and a UNIX-socket operation denied by that environment.
+  Complete failure traces and environment metadata were not supplied here.
+  The socket restriction does not explain the four other failures.
+- Earlier passing runs above are observations in a different execution
+  environment, not universal certification. The reported process failures have
+  not been independently reproduced here and must not be marked resolved solely
+  because another suite passes.
+- A deterministic signal-injection check did reproduce a deadlock in the old
+  Ctrl+C handler: a second signal inside `Event.set()` reacquired its
+  non-reentrant lock. The handler now uses a boolean, with a subprocess
+  regression for that critical section. This is a demonstrated defect, not
+  proof that it caused the reported launcher failure.
+- Waiting for a worker leader did not guarantee that its signalled descendants
+  had stopped yet. Teardown now explicitly confirms process-group states with
+  bounded waits. Regression tests retain strict disappearance assertions for
+  player children that the audio worker owns and must reap; failures include
+  process-group state diagnostics. Forced-kill orphans may still be zombies
+  awaiting their parent's collection; those entries are logged, not presented
+  as proof of complete reaping.
+- UI regressions cover blocked pauses during send, language change and OFF
+  toggles, cancellation before audio preparation completes, closing during a
+  pause, and explicit pause failures without sending or playing anything.
+  Devices and models are simulated; Tk runs under a virtual display.
+- Real microphone/playback acceptance, silence tuning and reproducing the
+  reported failures in their original environment remain pending. No new
+  online request is authorized by these changes.
 
 ### Pending improvement: web queries with a local model
 

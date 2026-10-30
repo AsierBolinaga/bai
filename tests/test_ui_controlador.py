@@ -240,6 +240,7 @@ def test_voz_inicial_siempre_desactivada(ventana_tk, disponible):
         assert "Voz local no disponible" not in _chat(v)
         if not disponible:
             v._alternar_voz()
+            _esperar(v, lambda: "modelo ausente" in _chat(v))
             assert "modelo ausente" in _chat(v)
     finally:
         v.raiz.destroy()
@@ -299,7 +300,7 @@ def test_cambio_online_ofrece_reinicio_guardando_sin_enviar_contexto(
     v = ventana_tk
     entorno.sel.config["aislamiento_offline"] = "proceso"
     v.enviar("hola")
-    _esperar(v, lambda: len(v.controlador.historial) == 2 and not v.controlador.ocupado)
+    _esperar(v, lambda: len(v.controlador.historial) == 2 and not v._turno_pendiente)
     avisos = []
     monkeypatch.setattr(ui.messagebox, "askyesno",
                         lambda titulo, mensaje, **kw: avisos.append(mensaje) or confirmar)
@@ -436,7 +437,7 @@ def test_esfera_anima_durante_respuesta_y_para_al_terminar(ventana_tk, fallo):
     assert esfera._temporizador is None
     v.enviar("hola")
     try:
-        assert entra.wait(5)
+        _esperar(v, entra.is_set)
         assert esfera._temporizador is not None
         antes = esfera.coords(esfera._bola)
         _esperar(v, lambda: esfera.coords(esfera._bola) != antes)
@@ -524,7 +525,7 @@ def test_voz_opcional_anima_hasta_fin_audio_y_se_puede_silenciar(ventana_tk, voz
     v.enviar("estado")
     _esperar(v, lambda: v._hablando)
     v._alternar_voz()
-    assert not voz_fake.activo and not v._voz_activada
+    _esperar(v, lambda: not voz_fake.activo and not v._voz_activada)
     assert v.esfera._temporizador is None
 
 
@@ -534,7 +535,7 @@ def test_voz_se_corta_con_nuevo_mensaje_y_al_cerrar(ventana_tk, voz_fake):
     v.enviar("ayuda")
     _esperar(v, lambda: v._hablando)
     v.enviar("estado")
-    assert not voz_fake.activo
+    _esperar(v, lambda: not voz_fake.activo)
     _esperar(v, lambda: v._hablando)
     v.cerrar()
     _esperar(v, lambda: v._cerrada)
@@ -554,7 +555,7 @@ def test_cierre_no_espera_backend_y_no_guarda_respuesta_tardia(ventana_tk, entor
 
     v.controlador._preguntar = preguntar
     v.enviar("lenta")
-    assert entra.wait(5)
+    _esperar(v, entra.is_set)
     try:
         inicio = time.monotonic()
         v.cerrar()
@@ -583,7 +584,7 @@ def test_cancelar_desde_boton_descarta_turno_y_permite_siguiente(ventana_tk, ent
 
     v.controlador._preguntar = preguntar
     v.enviar("bloquear")
-    assert entra.wait(2)
+    _esperar(v, entra.is_set)
     v.raiz.update()
     assert v.boton_cancelar.winfo_ismapped()
     v.boton_cancelar._comando()
@@ -727,6 +728,7 @@ def test_audio_reactivado_tras_fallo_guardado_se_limpia_en_siguiente_cierre(
     assert voz_fake.cierres == 1
     v._alternar_voz()
     v._leer("otra lectura")
+    _esperar(v, lambda: voz_fake.activo)
     assert voz_fake.activo and v._voz_activada
     v.controlador._guardar = lambda h: True
     v.cerrar()
@@ -758,6 +760,7 @@ def test_voz_informa_dependencia_ausente_y_fallo_audio(ventana_tk, voz_fake):
     v = ventana_tk
     voz_fake.disponible = False
     v._alternar_voz()
+    _esperar(v, lambda: "Instala Piper" in _chat(v))
     assert "Instala Piper" in _chat(v) and not v._voz_activada
     voz_fake.disponible = True
     v._alternar_voz()
@@ -829,12 +832,13 @@ def test_escucha_arranca_off_y_toggle_controla_microfono(ventana_tk, escucha_fak
     assert not v._escucha_activada and escucha_fake.inicios == 0
     assert v.boton_escucha.itemcget(v.boton_escucha._texto, "text") == "Escucha: OFF"
     v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
     assert v._escucha_activada and escucha_fake.activa
     escucha_fake.eventos = [("estado", "Escuchando")]
     v._actualizar_escucha()
-    assert v.estado_escucha.cget("text") == "Escuchando"
+    _esperar(v, lambda: v.estado_escucha.cget("text") == "Escuchando")
     v._alternar_escucha()
-    assert not v._escucha_activada and not escucha_fake.activa
+    _esperar(v, lambda: not v._escucha_activada and not escucha_fake.activa)
     v._actualizar_escucha()
     assert escucha_fake.inicios == 1
 
@@ -843,11 +847,11 @@ def test_escucha_envia_una_frase_y_pausa_hasta_terminar_voz(ventana_tk, escucha_
     v = ventana_tk
     v._alternar_voz()
     v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
     escucha_fake.eventos = [("texto", "hola"), ("fin", "")]
     v._actualizar_escucha()
-    assert "Boli: hola" in _chat(v)
-    assert not escucha_fake.activa and v._escucha_activada
-    _esperar(v, lambda: v._hablando)
+    _esperar(v, lambda: "Boli: hola" in _chat(v))
+    _esperar(v, lambda: v._hablando and bool(voz_fake.textos))
     assert not escucha_fake.activa
     assert escucha_fake.inicios == 1
     voz_fake.activo = False
@@ -858,12 +862,13 @@ def test_escucha_envia_una_frase_y_pausa_hasta_terminar_voz(ventana_tk, escucha_
     assert voz_fake.pausas > 0 and voz_fake.cierres == 0
     v._alternar_escucha()
     v._alternar_voz()
-    assert escucha_fake.cierres == 1 and voz_fake.cierres == 1
+    _esperar(v, lambda: escucha_fake.cierres == 1 and voz_fake.cierres == 1)
 
 
 def test_escucha_sin_tts_se_reanuda_tras_respuesta(ventana_tk, escucha_fake):
     v = ventana_tk
     v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
     escucha_fake.eventos = [("texto", "hola")]
     v._actualizar_escucha()
     _esperar(v, lambda: escucha_fake.inicios == 2)
@@ -873,9 +878,10 @@ def test_escucha_sin_tts_se_reanuda_tras_respuesta(ventana_tk, escucha_fake):
 def test_envio_manual_descarta_audio_pendiente(ventana_tk, escucha_fake):
     v = ventana_tk
     v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
     escucha_fake.eventos = [("texto", "audio antiguo")]
     v.enviar("estado")
-    assert not escucha_fake.activa and escucha_fake.eventos == []
+    _esperar(v, lambda: not escucha_fake.activa and escucha_fake.eventos == [])
     _esperar(v, lambda: escucha_fake.inicios == 2)
     assert "audio antiguo" not in _chat(v)
 
@@ -887,9 +893,10 @@ def test_error_de_escucha_desactiva_sin_reintentos_infinitos(ventana_tk, escucha
         escucha_fake.error = "sin micrófono"
     v._alternar_escucha()
     if tipo != "inicio":
+        _esperar(v, lambda: escucha_fake.activa)
         escucha_fake.eventos = [(tipo, "sin micrófono")]
         v._actualizar_escucha()
-    assert not v._escucha_activada and not escucha_fake.activa
+    _esperar(v, lambda: not v._escucha_activada and not escucha_fake.activa)
     assert "sin micrófono" in _chat(v) or "sin una transcripción" in _chat(v)
     inicios = escucha_fake.inicios
     v._actualizar_escucha()
@@ -899,7 +906,7 @@ def test_error_de_escucha_desactiva_sin_reintentos_infinitos(ventana_tk, escucha
 def test_cierre_y_destruccion_detienen_microfono(ventana_tk, escucha_fake):
     v = ventana_tk
     v._alternar_escucha()
-    assert escucha_fake.activa
+    _esperar(v, lambda: escucha_fake.activa)
     v.cerrar()
     assert not v._escucha_activada
     _esperar(v, lambda: v._cerrada)
@@ -910,6 +917,7 @@ def test_activar_escucha_durante_voz_espera_a_que_termine(ventana_tk, escucha_fa
     v = ventana_tk
     v._alternar_voz()
     v._leer("Hola")
+    _esperar(v, lambda: voz_fake.activo)
     v._alternar_escucha()
     assert v._escucha_activada and not escucha_fake.activa
     voz_fake.activo = False
@@ -919,11 +927,144 @@ def test_activar_escucha_durante_voz_espera_a_que_termine(ventana_tk, escucha_fa
 def test_idioma_de_microfono_no_cambia_voces_y_descarta_frase_anterior(ventana_tk, escucha_fake):
     v = ventana_tk
     v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
     assert escucha_fake.idioma is None
     escucha_fake.eventos = [("texto", "frase antigua")]
     v.idioma_escucha.set("Euskera")
     v._cambiar_idioma_escucha()
-    assert escucha_fake.idioma == "eu" and escucha_fake.inicios == 2
+    _esperar(v, lambda: escucha_fake.idioma == "eu" and escucha_fake.inicios == 2)
     assert escucha_fake.eventos == []
     assert "se ha descartado la frase en curso" in _chat(v)
     assert not v._voz_activada
+
+
+@pytest.mark.parametrize("accion", ["enviar", "idioma", "voz_off", "escucha_off"])
+def test_operaciones_audio_no_esperan_en_tk_y_respetan_orden(
+        ventana_tk, voz_fake, escucha_fake, monkeypatch, accion):
+    v = ventana_tk
+    v._alternar_voz()
+    v._alternar_escucha()
+    _esperar(v, lambda: escucha_fake.activa)
+    entra, sale = threading.Event(), threading.Event()
+    principal = threading.get_ident()
+    originales = []
+    operaciones = []
+    llamadas = []
+
+    recurso = voz_fake if accion == "voz_off" else escucha_fake
+    metodo = "detener" if accion.endswith("_off") else "pausar"
+    original = getattr(recurso, metodo)
+
+    def bloquear():
+        llamadas.append(threading.get_ident())
+        entra.set()
+        assert sale.wait(4)
+        original()
+        operaciones.append("pausa completada")
+
+    def preguntar(texto, historial):
+        assert "pausa completada" in operaciones
+        originales.append(texto)
+        return "respuesta ordenada"
+
+    monkeypatch.setattr(recurso, metodo, bloquear)
+    v.controlador._preguntar = preguntar
+    try:
+        inicio = time.monotonic()
+        if accion == "enviar":
+            v.enviar("prueba")
+        elif accion == "idioma":
+            v.idioma_escucha.set("Euskera")
+            v._cambiar_idioma_escucha()
+        elif accion == "voz_off":
+            v._alternar_voz()
+        else:
+            v._alternar_escucha()
+        assert time.monotonic() - inicio < 0.2
+        assert entra.wait(1)
+        latidos = []
+        v.raiz.after(1, lambda: latidos.append(True))
+        _esperar(v, lambda: bool(latidos))
+        assert not originales and escucha_fake.inicios == 1
+        assert llamadas and all(hilo != principal for hilo in llamadas)
+    finally:
+        sale.set()
+    _esperar(v, lambda: bool(operaciones))
+    if accion == "enviar":
+        _esperar(v, lambda: originales == ["prueba"])
+    elif accion == "idioma":
+        _esperar(v, lambda: escucha_fake.idioma == "eu")
+
+
+def test_cancelar_antes_de_confirmar_pausa_no_envia_ni_guarda(
+        ventana_tk, escucha_fake, monkeypatch):
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+    consultas = []
+
+    def pausar():
+        entra.set()
+        assert sale.wait(4)
+
+    monkeypatch.setattr(escucha_fake, "pausar", pausar)
+    v.controlador._preguntar = lambda t, h: consultas.append(t) or "respuesta"
+    try:
+        v.enviar("no enviar")
+        assert entra.wait(1)
+        v.cancelar()
+        assert not v._turno_pendiente and not v.controlador.ocupado
+    finally:
+        sale.set()
+    _esperar(v, lambda: "cancelada" in _chat(v).lower())
+    v.enviar("siguiente")
+    _esperar(v, lambda: consultas == ["siguiente"] and not v._turno_pendiente)
+    assert all(m["content"] != "no enviar" for m in v.controlador.historial)
+
+
+def test_pausa_fallida_no_envia_ni_inicia_reproduccion(
+        ventana_tk, escucha_fake, voz_fake, monkeypatch):
+    v = ventana_tk
+    consultas = []
+    v.controlador._preguntar = lambda t, h: consultas.append(t) or "respuesta"
+
+    def fallar():
+        raise RuntimeError("pausa sin confirmar")
+
+    monkeypatch.setattr(escucha_fake, "pausar", fallar)
+    v.enviar("no enviar")
+    _esperar(v, lambda: "pausa sin confirmar" in _chat(v) and not v._turno_pendiente)
+    assert consultas == [] and v.controlador.historial == []
+    assert not v._escucha_activada and not v._voz_activada
+    v._alternar_voz()
+    v._leer("no reproducir")
+    _esperar(v, lambda: not v._voz_activada)
+    assert voz_fake.textos == []
+
+
+def test_cerrar_durante_pausa_descarta_arranques_y_no_congela_tk(
+        ventana_tk, escucha_fake, voz_fake, monkeypatch):
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+
+    def pausar():
+        entra.set()
+        assert sale.wait(4)
+
+    monkeypatch.setattr(escucha_fake, "pausar", pausar)
+    try:
+        v._alternar_voz()
+        v._leer("no reproducir al cerrar")
+        assert entra.wait(1)
+        v._alternar_escucha()
+        inicio = time.monotonic()
+        v.cerrar()
+        assert time.monotonic() - inicio < 0.2
+        latidos = []
+        v.raiz.after(1, lambda: latidos.append(True))
+        _esperar(v, lambda: bool(latidos))
+        assert not v._cerrada
+    finally:
+        sale.set()
+    _esperar(v, lambda: v._cerrada)
+    assert escucha_fake.inicios == 0
+    assert not voz_fake.activo and voz_fake.cierres == 1

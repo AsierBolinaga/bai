@@ -8,6 +8,7 @@ import pytest
 from config import audio_config
 from core.audio_worker import ProcesoAudio
 from core.escucha import DetectorFrase
+from core.procesos import estado_grupo
 
 
 def esperar(worker, tipo):
@@ -233,12 +234,12 @@ servir('voz', {'silencio_reproduccion': 0})
     hijo = int(esperar(w, "estado"))
     assert Path(f"/proc/{hijo}").exists()
     w.cancelar()
-    assert not Path(f"/proc/{hijo}").exists()
+    assert not Path(f"/proc/{hijo}").exists(), estado_grupo(pid_worker)
     assert w.proceso.pid == pid_worker and w.proceso.poll() is None
     w.enviar("hablar", "dos")
     hijo = int(esperar(w, "estado"))
     w.cerrar()
-    assert not Path(f"/proc/{hijo}").exists()
+    assert not Path(f"/proc/{hijo}").exists(), estado_grupo(pid_worker)
 
 
 def test_cierre_audio_mata_grupo_si_worker_no_ejecuta_limpieza(worker):
@@ -277,6 +278,30 @@ def test_cierre_audio_informa_si_lector_no_confirma_sin_join_infinito(worker):
         assert esperas and all(0 < espera <= 0.5 for espera in esperas)
     finally:
         w._hilo = hilo
+
+
+def test_envio_audio_bloqueado_no_impide_cierre_acotado(worker):
+    w = worker("voz", "import time; print('[0, \"listo\", \"\"]', flush=True); time.sleep(60)")
+    esperar(w, "listo")
+    proceso = w.proceso
+    inicio = time.monotonic()
+    with pytest.raises(RuntimeError, match="canal de audio no confirmó el envío"):
+        w.enviar("hablar", "x" * 1_000_000)
+    assert time.monotonic() - inicio < 2
+    assert proceso.poll() is not None and w.proceso is None
+
+
+def test_pausa_no_oculta_error_si_no_puede_confirmar_cierre(worker, monkeypatch):
+    w = worker("voz", "import time; print('[0, \"listo\", \"\"]', flush=True); time.sleep(60)")
+    esperar(w, "listo")
+
+    def fallar():
+        raise RuntimeError("grupo sigue activo")
+
+    with monkeypatch.context() as m:
+        m.setattr(w, "cerrar", fallar)
+        with pytest.raises(RuntimeError, match="grupo sigue activo"):
+            w.cancelar()
 
 
 @pytest.mark.parametrize("valor", [-1, True, "2", float("nan"), float("inf"), 31])
