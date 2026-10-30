@@ -976,9 +976,23 @@ Follow-up findings and validation scope (2026-10-30):
   toggles, cancellation before audio preparation completes, closing during a
   pause, and explicit pause failures without sending or playing anything.
   Devices and models are simulated; Tk runs under a virtual display.
-- Real microphone/playback acceptance, silence tuning and reproducing the
-  reported failures in their original environment remain pending. No new
-  online request is authorized by these changes.
+- On the user's Ubuntu machine, after installing the declared `pytest`
+  development dependency, the focused audio/UI/process suite passed **122
+  tests**. Ten additional stress rounds passed **13 tests each (130 passes)**,
+  including launcher Ctrl+C, worker cancellation and audio/process cleanup.
+- The complete suite on that same machine passed **1,349 tests**, with **19
+  skips**: nine due to AppArmor preventing user namespaces and ten due to
+  optional real-model test dependencies not being installed. The earlier
+  failures did not recur, but the UNIX-socket check was skipped along with the
+  namespace checks, so that capability was not validated by this run. The four
+  process/launcher failures did not recur in the reported suite or ten stress
+  rounds. This is strong regression evidence for that machine; because the
+  earlier complete failure output was not supplied, it does not establish a
+  root cause for each failure or certify cleanup on every host.
+- These were automated tests with simulated devices and models under Xvfb.
+  Real microphone/playback acceptance, silence tuning and end-to-end voice
+  conversation remain pending. No new online request is authorized by these
+  changes.
 
 ### Pending improvement: web queries with a local model
 
