@@ -28,10 +28,15 @@ def analizar_argumentos(argv=None):
                       help="autoriza el motor online configurado para esta sesión")
     modo.add_argument("--offline", action="store_true", help="fuerza el modo offline")
     parser.add_argument("--ui", action="store_true", help="abre la interfaz gráfica en lugar de la consola")
+    parser.add_argument("--preparar-modelo", action="store_true",
+                        help="descarga/verifica el modelo local con red y termina, sin abrir una sesión")
     parser.add_argument("--sesion", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--aislamiento", choices=AISLAMIENTOS_VALIDOS, default=None,
                         help="nivel de aislamiento de red en modo offline (por defecto el de la configuración)")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.preparar_modelo and (args.online or args.offline or args.ui or args.sesion or args.aislamiento):
+        parser.error("--preparar-modelo es una acción independiente; no admite opciones de sesión")
+    return args
 
 
 def preparar_arranque(argv=None, salida=print):

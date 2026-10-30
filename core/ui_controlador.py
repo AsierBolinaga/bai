@@ -9,12 +9,16 @@ probar sin pantalla.
 """
 import threading
 from collections import namedtuple
+from copy import deepcopy
+
+from core.cancelacion import GeneracionCancelada, cancelacion_turno, comprobar_cancelacion
 
 Turno = namedtuple("Turno", "texto avisos guardado limpiado")
 
 COMANDOS_LIMPIAR = ("reset", "limpiar")
 MENSAJE_LIMPIADO = "Memoria de sesión limpiada."
 MENSAJE_OCUPADO = "B.A.I sigue respondiendo al mensaje anterior."
+MENSAJE_CANCELADO = "Generación cancelada. El turno no se ha añadido al historial."
 
 
 class ControladorChat:
@@ -35,7 +39,9 @@ class ControladorChat:
         self._describir = describir
         self._estado = estado
         self._cerrojo = threading.Lock()
-        self._avisos = []
+        self._estado_lock = threading.Lock()
+        self._persistencia = threading.Lock()
+        self._cancelacion = None
 
     # ----------------------------------------------------------------- consulta
     def estado_barra(self):
@@ -58,17 +64,39 @@ class ControladorChat:
             return None
         if not self._cerrojo.acquire(blocking=False):
             return Turno(MENSAJE_OCUPADO, [], True, False)
+        with self._estado_lock:
+            self._cancelacion = threading.Event()
+        return self._ejecutar(texto)
+
+    def _ejecutar(self, texto):
         try:
-            return self._procesar(texto)
+            with cancelacion_turno(self._cancelacion):
+                return self._procesar(texto)
+        except GeneracionCancelada:
+            return Turno(MENSAJE_CANCELADO, [], True, False)
         finally:
             self._cerrojo.release()
+
+    def cancelar(self):
+        with self._estado_lock:
+            if self._cancelacion is not None:
+                self._cancelacion.set()
 
     def enviar_en_hilo(self, texto, al_terminar):
         """Ejecuta `enviar` en un hilo y llama a `al_terminar(turno)` desde ese hilo.
         La ventana no debe tocar Tk desde la llamada: debe pasar el turno a su hilo principal."""
+        texto = (texto or "").strip()
+        if not texto:
+            return None
+        if not self._cerrojo.acquire(blocking=False):
+            al_terminar(Turno(MENSAJE_OCUPADO, [], True, False))
+            return None
+        with self._estado_lock:
+            self._cancelacion = threading.Event()
+
         def trabajo():
             try:
-                turno = self.enviar(texto)
+                turno = self._ejecutar(texto)
             except Exception as e:  # el hilo nunca debe morir en silencio
                 turno = Turno(f"Error interno: {e}", [], True, False)
             if turno is not None:
@@ -78,26 +106,42 @@ class ControladorChat:
         return hilo
 
     def _procesar(self, texto):
+        with self._estado_lock:
+            historial = deepcopy(self.historial)
         if texto.lower() in COMANDOS_LIMPIAR:
-            self.historial.clear()
-            guardado = bool(self._guardar(self.historial))
+            with self._estado_lock:
+                comprobar_cancelacion()
+                self.historial.clear()
+            guardado = self._guardar_copia([])
             return Turno(MENSAJE_LIMPIADO, [], guardado, True)
 
-        self._avisos = []
-        antes = _instalar_avisador(self._avisos.append)
+        avisos = []
+        antes = _instalar_avisador(avisos.append)
         try:
-            respuesta = self._preguntar(texto, self.historial)
+            respuesta = self._preguntar(texto, historial)
         finally:
             _instalar_avisador(antes)
-        avisos, self._avisos = self._avisos, []
-        guardado = bool(self._guardar(self.historial))
+        with self._estado_lock:
+            comprobar_cancelacion()
+            self.historial[:] = historial
+        guardado = self._guardar_copia(historial)
         return Turno(respuesta, avisos, guardado, False)
 
     # ----------------------------------------------------------------- cierre
+    def _guardar_copia(self, historial):
+        if not self._persistencia.acquire(timeout=1):
+            raise TimeoutError("El guardado anterior no ha terminado.")
+        try:
+            return bool(self._guardar(historial))
+        finally:
+            self._persistencia.release()
+
     def cerrar(self):
-        """Guarda el historial al cerrar la ventana (equivale a 'salir' en la consola)."""
-        with self._cerrojo:
-            return bool(self._guardar(self.historial))
+        """Cancela y guarda los turnos completados, sin esperar al backend."""
+        self.cancelar()
+        with self._estado_lock:
+            historial = deepcopy(self.historial)
+        return self._guardar_copia(historial)
 
 
 def _estado_barra():

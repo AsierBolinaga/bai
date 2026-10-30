@@ -203,14 +203,19 @@ def test_ask_acepta_selector_explicito(ai_engine_aislado, selector_fake):
 
 def test_get_selector_es_perezoso_y_unico(ai_engine_aislado, monkeypatch):
     creados = []
+    activados = []
 
     class SelectorDummy:
         def __init__(self):
             creados.append(self)
 
+        def activar_worker(self):
+            activados.append(self)
+
     monkeypatch.setattr(ai_engine_aislado, "ModelSelector", SelectorDummy)
     assert ai_engine_aislado.get_selector() is ai_engine_aislado.get_selector()
     assert len(creados) == 1
+    assert activados == creados
 
 
 def test_describir_estado_formato(entorno):

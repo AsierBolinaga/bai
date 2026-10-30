@@ -7,6 +7,7 @@ y el resultado vuelve al hilo de Tk por una cola, nunca llamando a Tk desde el h
 import math
 import queue
 import threading
+from time import monotonic
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -14,11 +15,12 @@ from tkinter import messagebox
 
 from core.config import nombre_ia, master_name
 from core.ayuda import DESCRIPCION_BAI
-from core.ui_controlador import ControladorChat
+from core.ui_controlador import ControladorChat, MENSAJE_CANCELADO
 from core.voz import VozLocal
 from core.escucha import EscuchaLocal
 
 INTERVALO_COLA_MS = 100
+PLAZO_CIERRE_SEGUNDOS = 3
 ANCHO_BARRA_ESTRECHA = 640
 IDIOMAS_ESCUCHA = {"Automático": None, "Castellano": "es", "Euskera": "eu", "Inglés": "en"}
 
@@ -140,6 +142,7 @@ class VentanaBai:
         self._cola_cierre = queue.Queue()
         self._cerrando = False
         self._cerrada = False
+        self._plazo_cierre = None
         self._hilo_turno = None
         self._reinicio = None
         self._voz = voz if voz is not None else VozLocal()
@@ -228,6 +231,10 @@ class VentanaBai:
         self.entrada.bind("<Return>", lambda _e: self.enviar())
         self.boton_enviar = self._boton(pie, "Enviar", self.enviar, COLORES["acento"])
         self.boton_enviar.grid(row=2, column=1, padx=(8, 0), sticky="ns")
+        self.boton_cancelar = self._boton(pie, "Cancelar", self.cancelar, COLORES["boton"])
+        self.boton_cancelar.grid(row=2, column=1, padx=(8, 0), sticky="ns")
+        self.boton_cancelar.grid_remove()
+        self.raiz.bind("<Escape>", lambda _e: self.cancelar())
 
         centro = tk.Frame(self.raiz, bg=COLORES["fondo"])
         centro.pack(fill="both", expand=True)
@@ -311,36 +318,47 @@ class VentanaBai:
         self._turno_pendiente = True
         self._hilo_turno = self.controlador.enviar_en_hilo(texto, self._cola.put)
 
+    def cancelar(self):
+        if self._cerrando or not self.controlador.ocupado:
+            return
+        self.controlador.cancelar()
+        self.boton_cancelar.configure(state="disabled")
+        self._mostrar("aviso", "Cancelando la generación…", "aviso")
+
     def cerrar(self):
         if self._cerrando:
             return
         self._cerrando = True
+        self.controlador.cancelar()
         self._desactivar_escucha()
         self._detener_voz()
+        self._voz.detener()
         self.esfera.activar(False)
         self.entrada.configure(state="disabled")
         self.boton_enviar.configure(state="disabled")
+        self.boton_cancelar.configure(state="disabled")
         for boton in self.botones_barra + [self.boton_voz, self.boton_escucha]:
             boton.configure(state="disabled")
         self.idioma_escucha.configure(state="disabled")
-        self._mostrar("aviso", "Cerrando: espero a que termine la operación y guardo el historial.", "aviso")
+        self._mostrar("aviso", "Cerrando: cancelo la generación y guardo los turnos completados.", "aviso")
+        self._plazo_cierre = monotonic() + PLAZO_CIERRE_SEGUNDOS
+        cola_cierre = self._cola_cierre = queue.Queue()
 
         # Esperar el cerrojo o el disco nunca debe bloquear el hilo de Tk.
         def guardar():
             try:
-                if self._hilo_turno is not None:
-                    self._hilo_turno.join()
                 guardado = self.controlador.cerrar()
             except Exception as error:
-                self._cola_cierre.put((False, str(error)))
+                cola_cierre.put((False, str(error)))
             else:
-                self._cola_cierre.put((bool(guardado), None))
+                cola_cierre.put((bool(guardado), None))
 
         threading.Thread(target=guardar, name="bai-ui-cierre", daemon=True).start()
 
     def _al_destruir(self, evento):
         if evento.widget is self.raiz:
             self._cerrada = True
+            self.controlador.cancelar()
             self._escucha.detener()
             self._voz.detener()
             self.raiz.after_cancel(self._temporizador_cola)
@@ -351,21 +369,28 @@ class VentanaBai:
         if not self._voz_activada and not self._voz.disponible:
             self._mostrar("aviso", f"Voz local no disponible. {self._voz.motivo_no_disponible}", "aviso")
             return
+        if not self._voz_activada:
+            try:
+                self._voz.activar()
+            except (OSError, RuntimeError, ValueError) as error:
+                self._mostrar("aviso", f"No se ha podido activar la voz: {error}", "aviso")
+                return
         self._voz_activada = not self._voz_activada
         self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: ON" if self._voz_activada else "Voz: OFF")
         if not self._voz_activada:
             self._detener_voz()
+            self._voz.detener()
             self.esfera.activar(self.controlador.ocupado)
 
     def _detener_voz(self):
-        self._voz.detener()
+        self._voz.pausar()
         self._hablando = False
 
     def _leer(self, texto):
         self._pausar_escucha()
         try:
             self._voz.hablar(texto)
-        except (OSError, RuntimeError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             self._mostrar("aviso", f"No se ha podido iniciar la voz: {error}", "aviso")
             return
         self._hablando = True
@@ -391,7 +416,7 @@ class VentanaBai:
         self._actualizar_escucha()
 
     def _pausar_escucha(self):
-        self._escucha.detener()
+        self._escucha.pausar()
         self._escucha_en_curso = False
         if self._escucha_activada:
             self.estado_escucha.configure(text="Pausada")
@@ -399,6 +424,7 @@ class VentanaBai:
     def _desactivar_escucha(self):
         self._escucha_activada = False
         self._pausar_escucha()
+        self._escucha.detener()
         self.boton_escucha.itemconfigure(self.boton_escucha._texto, text="Escucha: OFF")
         self.estado_escucha.configure(text="Escucha OFF")
 
@@ -412,7 +438,7 @@ class VentanaBai:
         if not self._escucha_en_curso:
             try:
                 self._escucha.iniciar(IDIOMAS_ESCUCHA[self.idioma_escucha.get()])
-            except (OSError, RuntimeError) as error:
+            except (OSError, RuntimeError, ValueError) as error:
                 self._desactivar_escucha()
                 self._mostrar("aviso", f"No se ha podido activar el micrófono: {error}", "aviso")
                 return
@@ -447,6 +473,7 @@ class VentanaBai:
                 self.raiz.destroy()
                 return
             self._cerrando = False
+            self._plazo_cierre = None
             self._reinicio = None
             self._mostrar("aviso", "No he podido guardar el historial al cerrar"
                           + (f": {error}" if error else ". Revisa la consola.")
@@ -455,18 +482,34 @@ class VentanaBai:
                 boton.configure(state="normal")
             self.idioma_escucha.configure(state="readonly")
             self._bloquear(self.controlador.ocupado)
+        if self._cerrando and self._plazo_cierre is not None and monotonic() >= self._plazo_cierre:
+            self._plazo_cierre = None
+            if messagebox.askyesno(
+                    "Cierre sin confirmar",
+                    "El guardado no ha confirmado el cierre en 3 segundos. "
+                    "¿Cerrar igualmente? Podrían perderse los últimos cambios no guardados. "
+                    "Si eliges No, seguiré esperando el guardado.",
+                    parent=self.raiz):
+                self._reinicio = None
+                self.raiz.destroy()
+                return
         try:
             while True:
                 self._pintar_turno(self._cola.get_nowait())
         except queue.Empty:
             pass
-        if self._hablando:
+        if self._voz_activada:
             activo, error = self._voz.comprobar()
+            for aviso in self._voz.recoger_avisos():
+                self._mostrar("aviso", aviso, "aviso")
             if not activo:
                 self._hablando = False
                 self.esfera.activar(self.controlador.ocupado)
                 if error:
                     self._mostrar("aviso", error, "aviso")
+                    self._voz_activada = False
+                    self.boton_voz.itemconfigure(self.boton_voz._texto, text="Voz: OFF")
+                    self._voz.detener()
         self._actualizar_escucha()
         self._temporizador_cola = self.raiz.after(INTERVALO_COLA_MS, self._vaciar_cola)
 
@@ -481,7 +524,7 @@ class VentanaBai:
             self._mostrar("aviso", "No he podido guardar el historial en disco; revisa la consola.", "aviso")
         if not self._cerrando:
             self._bloquear(False)
-        if self._voz_activada and not self._cerrando:
+        if self._voz_activada and not self._cerrando and turno.texto != MENSAJE_CANCELADO:
             self._leer(turno.texto)
 
     def _mostrar(self, autor, texto, etiqueta=None):
@@ -500,6 +543,13 @@ class VentanaBai:
         self.esfera.activar(ocupado)
         estado = "disabled" if ocupado else "normal"
         self.boton_enviar.configure(state=estado)
+        self.boton_cancelar.configure(state="normal" if ocupado and not self._cerrando else "disabled")
+        if ocupado:
+            self.boton_enviar.grid_remove()
+            self.boton_cancelar.grid()
+        else:
+            self.boton_cancelar.grid_remove()
+            self.boton_enviar.grid()
         self.entrada.configure(state=estado)
         if not ocupado:
             self.entrada.focus_set()
@@ -510,8 +560,14 @@ def crear_raiz():
     return tk.Tk()
 
 
-def iniciar_ui(controlador=None, raiz=None):
+def iniciar_ui(controlador=None, raiz=None, aviso_arranque=None):
     from core.reinicio import codigo_modo
     ventana = VentanaBai(controlador, raiz)
-    ventana.ejecutar()
+    if aviso_arranque:
+        ventana._mostrar("aviso", aviso_arranque, "aviso")
+    try:
+        ventana.ejecutar()
+    finally:
+        if not ventana._cerrada:
+            ventana.raiz.destroy()
     return codigo_modo(ventana._reinicio) if ventana._reinicio is not None else 0

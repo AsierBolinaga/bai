@@ -51,6 +51,19 @@ def test_online_y_offline_son_excluyentes():
         arranque.preparar_arranque(["--online", "--offline"])
 
 
+@pytest.mark.parametrize("opciones", [
+    ["--offline"], ["--online"], ["--ui"], ["--sesion"], ["--aislamiento", "python"],
+])
+def test_preparar_modelo_no_se_mezcla_con_sesion(opciones):
+    with pytest.raises(SystemExit):
+        arranque.analizar_argumentos(["--preparar-modelo", *opciones])
+
+
+def test_preparar_modelo_es_accion_explicita():
+    assert arranque.analizar_argumentos(["--preparar-modelo"]).preparar_modelo
+    assert not arranque.analizar_argumentos([]).preparar_modelo
+
+
 def test_ui_es_opcional_y_la_consola_sigue_por_defecto():
     assert arranque.analizar_argumentos([]).ui is False
     assert arranque.analizar_argumentos(["--ui"]).ui is True

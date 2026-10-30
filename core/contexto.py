@@ -25,6 +25,14 @@ def entero_positivo(valor, nombre):
     return valor
 
 
+def notificar_contexto(aviso):
+    avisador = _avisador.get()
+    if avisador is None:
+        warnings.warn(aviso, UserWarning, stacklevel=2)
+    else:
+        avisador(aviso)
+
+
 def estimar_tokens(messages):
     """Un token por byte UTF-8 más margen de formato; no es tokenización exacta."""
     return 64 + sum(len(m["content"].encode("utf-8")) + len(m["role"]) + 16 for m in messages)
@@ -69,9 +77,5 @@ def ajustar_contexto(messages, n_ctx, max_tokens, contar=estimar_tokens):
     if eliminados:
         aviso = (f"Contexto ajustado: {eliminados} mensajes antiguos omitidos sólo de "
                  "esta petición; el historial guardado y los hechos no se borran.")
-        avisador = _avisador.get()
-        if avisador is None:
-            warnings.warn(aviso, UserWarning, stacklevel=2)
-        else:
-            avisador(aviso)
+        notificar_contexto(aviso)
     return resultado

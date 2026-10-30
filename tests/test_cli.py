@@ -68,6 +68,51 @@ def cli(monkeypatch, tmp_path, selector_fake):
 
 
 # --------------------------------------------------------------------------- arranque y modo
+def test_ctrl_c_en_generacion_no_guarda_turno_parcial_y_permite_seguir(cli, monkeypatch, capsys):
+    original = assistant.ask
+
+    def preguntar(texto, historial):
+        if texto == "bloquear":
+            historial.append({"role": "user", "content": "parcial"})
+            raise KeyboardInterrupt()
+        return original(texto, historial)
+
+    monkeypatch.setattr(assistant, "ask", preguntar)
+    out = cli.ejecutar(["bloquear", "nueva", "salir"], capsys)
+    assert "Generación cancelada" in out and "respuesta de off_a" in out
+    assert cli.historial_guardado() == [
+        {"role": "user", "content": "nueva"},
+        {"role": "assistant", "content": "respuesta de off_a"}]
+
+
+def test_arranque_degradado_conserva_ayuda_memoria_estado_y_online(cli, monkeypatch, capsys):
+    import bai
+    from core.motors import registry
+    from core.motors.base import MotorError
+    cfg = cli.selector.config
+    cfg["offline"]["fallback"] = []
+    cfg["offline"]["motores"]["off_a"]["descargar_al_arrancar"] = True
+    def fallar(opciones):
+        raise MotorError("carga fallida de prueba")
+    from core import preparar_modelo
+    monkeypatch.setattr(preparar_modelo, "preparar_modelo", lambda cfg: None)
+    monkeypatch.setattr(registry, "obtener_motor", lambda _: type("Motor", (), {
+        "disponible": staticmethod(lambda opciones: (True, "")),
+        "cargar_modelo": staticmethod(fallar)}))
+    monkeypatch.setattr(bai, "preparar_arranque", lambda _: cfg)
+    entradas = iter(["estado", "ayuda", "recuerda que mi color es azul", "¿cuál es mi color?",
+                     "hola", "pasa a modo online", "hola online", "salir"])
+    monkeypatch.setattr(builtins, "input", lambda *_: next(entradas))
+    bai.main(["--sesion"])
+    salida = capsys.readouterr()
+    assert "Modo degradado" in salida.err and "carga fallida de prueba" in salida.out
+    assert "Boli Artificial Intelligence" in salida.out
+    assert "azul" in salida.out and cli.hechos_guardados()
+    assert "Modo cambiado a ONLINE" in salida.out and "respuesta de on_a" in salida.out
+    assert cli.fake.motores.todos["off_a"].llamadas == []
+    assert len(cli.fake.motores.todos["on_a"].llamadas) == 1
+
+
 def test_ayuda_en_cli_sin_motores_ni_cambios_persistentes(cli, capsys):
     from core.ayuda import AYUDA_BAI
     for motor in cli.fake.motores.todos.values():

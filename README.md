@@ -82,9 +82,11 @@ and mode-change messages still report the motor that will be used.
 Independently of the level: offline mode never checks connectivity, never
 calls the online motor, and GPT4All always runs with `allow_download=False`
 (a `true` in the yaml is ignored with a warning).
-The one-time model download is a separate **network-enabled preparation stage**
-in the launcher, before the offline session exists. It downloads only the model,
-not conversation data. It does not imply authorization for online inference.
+The one-time model download requires the explicit **network-enabled preparation
+action** `./bai.sh --preparar-modelo`. Normal startup, including `--offline`,
+never invokes a model download or connectivity check. Preparation downloads only
+the model, not conversation data, and exits without opening a session. It does
+not imply authorization for online inference.
 
 ---
 
@@ -115,17 +117,44 @@ python bai.py --ui                 # tkinter chat window instead of the console
 
 The current local model is **Qwen2.5-1.5B-Instruct Q4_K_M**, approximately
 1.12 GB on disk, with `chatml` formatting and a 4,096-unit context budget.
-On a local-mode launch, the supervisor:
+Prepare it explicitly once (requires internet if the file is absent):
+
+```bash
+./bai.sh --preparar-modelo
+# Equivalent: venv/bin/python bai.py --preparar-modelo
+./bai.sh --ui --offline
+```
+
+The independent preparation action cannot be combined with `--offline`,
+`--online`, `--ui` or isolation/session flags. It:
 
 1. Checks the configured model. If absent, downloads it from the official
    [Qwen GGUF repository](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)
    at a pinned revision, with console progress.
 2. Verifies its exact size and SHA256, then atomically installs the file.
    Partial downloads are removed on failure; an existing corrupt model is
-   reported, not silently overwritten. A failed preparation stops startup
-   without switching to the cloud.
-3. Starts the isolated session and loads the model once, reusing it for replies.
-   Subsequent launches verify the local file without downloading it again.
+   reported, not silently overwritten.
+3. Exits without starting chat, loading conversation memory or changing modes.
+   A preparation failure returns a nonzero exit code with an explicit error.
+
+Normal local startup applies isolation, checks local availability and, for the
+shipped Qwen configuration, verifies the file and attempts to load it once,
+reusing it for replies. **No model is downloaded during startup**, even if the
+legacy `descargar_al_arrancar: true` setting is present. That setting now only
+enables local verification/preloading. Restarting from Online to Offline also
+does not prepare/download a model.
+
+Missing `llama-cpp-python`, missing models, verification failures and model-load errors
+do not prevent access to the console or window. A visible startup warning
+explains the failure (also shown in the window's chat); `estado` marks the failed
+motor unavailable with that reason. Help, local memory commands and history
+management remain available, as does the explicit, confirmed change to Online.
+Configured local fallbacks can still answer; no online fallback is authorized
+by the failure. The failed motor is not retried on each message during that
+session. Correct the problem and restart to retry; this diagnostic is not saved
+to the configuration or carried into the replacement online session.
+Invalid application configuration and an unavailable graphical display still
+report their own startup errors; degraded mode applies to local-model failures.
 
 The download requires internet. Once installed, the local model works without
 it. To use a different local model, disable `descargar_al_arrancar` and configure
@@ -194,10 +223,50 @@ response, not a film voice clone. Speech runs on CPU and streams to `aplay`
 No online TTS or automatic model downloads are used at runtime. Mute, a new
 message or closing the window stops synthesis and playback. Missing dependencies and audio
 errors are shown in the chat; an available audio device is required.
-Playback starts with three seconds of PCM silence so the audio output can wake
+Playback starts by default with three seconds of PCM silence so the audio output can wake
 up before the first words. This adds a startup delay to each reading; the
 generated speech is preserved unchanged and cancellation remains available
 during that silence.
+
+### Audio latency settings and warm workers
+
+Edit `config/audio_config.yaml` and turn the affected function OFF and ON again:
+
+```yaml
+silencio_escucha: 5        # seconds after the last detected speech; allowed: 0.3–30
+silencio_reproduccion: 3  # PCM lead-in before each reading; allowed: 0–10
+```
+
+For example, `silencio_escucha: 1.5` and `silencio_reproduccion: 0.5` reduce the
+deliberate waits from eight to two seconds, **excluding** transcription,
+generation, calibration and playback. Lower settings are not automatically
+applied: the three-second output margin previously fixed clipped first words
+on this machine. Restore/increase it if that problem returns. An invalid or
+unreadable audio configuration produces an explicit activation error.
+
+Each enabled function owns a persistent child worker. Whisper is loaded once
+when listening is enabled; capture then starts after preparation. Piper loads
+each selected voice on its first reading and caches it; the language detector
+is also reused. Pausing for a response, manual input or a microphone-language
+change cancels the current job but keeps loaded models in RAM. The microphone
+is stopped, playback is terminated, and the worker acknowledges the pause;
+old job results cannot become a new chat message. A native inference/chunk
+already running may finish internally before the next job, but its cancelled
+output is discarded. If a pause is not acknowledged within 0.5 seconds, the
+worker is closed with an error instead of leaving capture/playback running.
+
+Turning a function OFF or closing the window terminates its worker and releases
+its model cache. This saves repeated load time at the cost of higher RAM use
+while enabled; the first use of a voice still has a cold-load cost.
+No workers are started with the default OFF toggles, and the processing remains
+outside Tk. Capture calibration still takes approximately one second per phrase.
+
+Local synthetic validation (not microphone acceptance): three Whisper
+transcriptions reused one worker, taking roughly 2.1–2.5 seconds each after
+initial preparation. Piper synthesis plus language selection took 2.71 seconds
+on its first request and 0.29 seconds on subsequent identical requests, without
+speaker playback. These are individual observations, not end-to-end latency
+guarantees.
 
 Optional voice setup (installation/download require internet; normal use does not):
 
@@ -224,11 +293,29 @@ mixed-language responses can be misclassified; a single voice reads the whole
 response. No text is sent online for detection. Other languages are not translated:
 the English voice's pronunciation of them can be poor.
 
-There is no manual dropdown, sample-playback button or `BAI_VOZ_MODELO` override. All three models
-and the detector are required; missing files/dependencies produce an explicit
-notice instead of silently choosing another voice. Preserve the local model
+There is no manual dropdown, sample-playback button or `BAI_VOZ_MODELO` override.
+The voices are independent: install **at least one**, not necessarily all three.
+Each installed voice needs both its `.onnx` and `.onnx.json` files. Piper, the
+language detector and `aplay` are still shared requirements.
+If the preferred voice is missing or incomplete, B.A.I chooses an installed
+alternative in **Spanish → Basque → English** order and shows a notice in the
+chat for that reading, keeping Voice ON. It does not translate the text, and
+cross-language pronunciation may be poor. If the preferred voice is installed,
+it always wins over that alternative order. File availability is checked for
+each reading, even when a model was previously cached. No automatic download is
+performed. If no complete voice remains, an explicit error is shown; re-enable
+Voice after installing one. A present but corrupt model or a playback failure
+still produces an error rather than being silently treated as an absent voice.
+Preserve the local model
 cards: Davefx's dataset is CC0, Antton's CC BY 4.0, and Northern English Male's
 CC BY-SA 4.0.
+
+Independent-voice validation: 189 focused audio/UI tests passed, including every
+combination of installed voices and fallback notices through the worker and UI.
+Real Piper synthesis was also checked in a temporary directory exposing only
+Davefx: Spanish, Basque and English sample texts produced nonempty PCM with that
+single cached model, with notices for the latter two. Audio was neither played
+nor saved; pronunciation quality with a cross-language voice was not validated.
 
 [Piper](https://github.com/OHF-Voice/piper1-gpl) is GPL-3.0-or-later.
 The [davefx model card](https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_ES/davefx/medium/MODEL_CARD)
@@ -247,6 +334,18 @@ additional time. The microphone is closed during transcription, while B.A.I is
 responding and during speech playback; it resumes afterwards. Speech during these
 pauses is not captured. Turning listening off, sending text manually, changing the
 microphone language or closing the window cancels/discards pending capture.
+
+Each capture starts with approximately one second of noise calibration: remain
+quiet until the status changes to **Escuchando**. Speech detection combines
+WebRTC VAD with an energy threshold of four times the median calibration RMS
+(minimum 200 in signed 16-bit PCM units), requiring five consecutive 30 ms
+frames above threshold. This rejects quiet background noise misclassified as
+speech and brief clicks. The status shows **Voz detectada** and a silence
+countdown, making the configured silence endpoint visible (five seconds by default). Calibration is repeated
+after each response; speaking during calibration or a changing/noisy environment
+can make detection too restrictive or too permissive. Soft speech may be missed.
+Noise rejection has regression coverage; real spoken acceptance of this
+adjustment remains pending.
 
 The microphone language selector offers **Automático**, **Castellano**, **Euskera**
 and **Inglés**, independently of the automatic output voices. Prefer **Euskera**
@@ -268,9 +367,10 @@ device configured in the operating system. Setup downloads the MIT-licensed
 `536b0662742c02347bc0e980a01041f333bce120`, into the Git-ignored
 `models/escucha/whisper-small` directory (about 465 MiB). Runtime uses local files
 only, CPU/int8 inference, `sounddevice` capture and WebRTC VAD. It neither downloads
-models nor uses a cloud speech service. Recognition runs in a cancellable child
-process, not the Tk thread; the model is loaded per utterance to release resources
-while the chat engine responds.
+models nor uses a cloud speech service. Recognition runs in a persistent,
+cancellable child process, not the Tk thread. The model stays loaded while
+listening is enabled, including response/playback pauses; disabling listening
+releases it.
 
 Audio stays in memory and is not saved. **Recognized text becomes an ordinary chat
 message and follows the same history and online/offline policies**; in online mode
@@ -295,10 +395,46 @@ requests, mode commands, offline guarantees and history behave identically; the
 *Online* button is the same explicit authorization as typing *"pasa a modo
 online"*. Messages are processed in a worker thread (the window never freezes),
 engine fallback notices appear in the conversation, and closing the window saves
-the history. Closing during generation waits in a background thread, keeping Tk
-responsive and rejecting new requests. It does not cancel engine inference;
-if a backend never returns, closing continues to wait. A failed final save keeps
-the window open with a visible error so the user can retry.
+the history.
+
+### Cancel generation and close without waiting for the backend
+
+During a request, **Cancelar** replaces **Enviar**; **Escape** also requests
+cancellation. The session selector runs adapters in a persistent child process,
+including local model preloading. Normal turns reuse the model cache.
+Cancellation terminates that worker and its local process group (including the
+Copilot CLI), escalating from TERM to KILL with bounded waits of 0.3 seconds
+each. It discards the interrupted turn without invoking fallback. The next
+request starts a fresh worker, so a local model must load again after cancellation.
+Python and native adapter output are separated from the JSON IPC protocol;
+worker-owned temporary directories are removed by the parent even after a kill.
+Offline workers also apply the Python network guard and inherit any kernel
+network namespace. The Python guard still does not cover native code or further
+subprocesses; the existing isolation limitations remain.
+
+Closing cancels the turn and saves a snapshot of **completed** history, rather
+than joining the generation thread indefinitely. A cancelled backend cannot
+append or save a late response. Saving runs outside Tk. If it has not confirmed
+completion after three seconds, the window offers either closing without that
+confirmation (risking unsaved changes) or explicitly continuing to wait.
+A forced close cancels any pending mode restart. A failed final save keeps the
+window open with a visible error so the user can retry. Audio-worker teardown and
+the final bounded engine teardown are separate from that three-second save check;
+it is not a hard deadline for arbitrary operating-system disk failures.
+
+In the console, **Ctrl+C during a response** cancels the request and returns to
+the prompt; **Ctrl+C at the prompt** saves history and exits. The supervisor lets
+the session handle that interrupt instead of killing it. Cancellation does not
+undo memory commands that already wrote facts, withdraw context already sent
+online, or guarantee that a remote server stops computation/billing after the
+local connection and CLI have been terminated. Connectivity/availability checks
+before inference still use their existing synchronous checks.
+
+Embedded code that constructs its own `ModelSelector` can opt into this execution
+with `activar_worker()` and must call `cerrar()` on exit. The application's
+`get_selector()` enables it automatically; directly invoking an adapter remains
+synchronous.
+
 `limpiar`/`reset` immediately saves the empty session history in both interfaces;
 save failures are reported, and persistent facts are not deleted.
 The window connects to the display *before* the process isolation
@@ -318,8 +454,9 @@ This script:
 - Installs `requirements.txt`
 - Launches `bai.sh` (CLI interface)
 
-The launcher now prepares the configured lightweight model automatically on a
-local-mode launch, before isolation, as described above. Copilot's SDK and CLI
+Model download is a separate explicit action: `./bai.sh --preparar-modelo`.
+The installer installs Python dependencies using the network, but the normal
+application launcher does not download the model. Copilot's SDK and CLI
 authentication are optional separate setup steps. `bai.sh` passes its arguments to
 `bai.py` (e.g. `./bai.sh --online`). The CLI can be started from any working
 directory: configuration, history and memory paths are resolved from the
@@ -418,6 +555,8 @@ core/
 ├── ai_engine.py         # Builds the context, handles mode commands, calls the selector
 ├── ayuda.py             # Shared local description and help guide (no model required)
 ├── model_selector.py    # Chooses motor/model for the active mode, with fallback chain
+├── generacion_worker.py # Persistent LLM worker; bounded process-group termination
+├── cancelacion.py       # Per-turn cancellation scope; no fallback after interruption
 ├── network_guard.py     # Python-level guard: blocks non-local socket/DNS use in offline mode (fallback)
 ├── aislamiento.py       # Process-level isolation: private network namespace (kernel-enforced)
 ├── arranque.py          # bai.py options (--online / --offline / --ui / --aislamiento) and isolation at startup
@@ -492,8 +631,8 @@ and selected purely through configuration) and checks that `llama_cpp` and
 ## 📋 Alternative OpenAI/Mistral configuration
 
 This is an alternative example, not the shipped Qwen/Copilot configuration in
-`config/motors_config.yaml`. It disables automatic preparation by omitting
-`descargar_al_arrancar`; place its GGUF file manually before using it.
+`config/motors_config.yaml`. It omits Qwen-specific verification/preloading
+(`descargar_al_arrancar`); place its GGUF file manually before using it.
 
 ```yaml
 modo_por_defecto: offline         # offline | online
@@ -568,7 +707,7 @@ python -m core.diagnostico --modo online --probar  # online check (needs OPENAI_
 Checklist for running the local model for real:
 
 1. `pip install llama-cpp-python` (needs a C/C++ compiler + cmake, or a prebuilt wheel) and/or `pip install gpt4all`
-2. With the shipped configuration, run `./bai.sh` to prepare Qwen automatically (~1.12 GB); for a custom model, place its GGUF file in `models/` and adjust the configuration. Relative paths resolve from the project root
+2. With the shipped configuration, explicitly run `./bai.sh --preparar-modelo` to prepare Qwen (~1.12 GB), then start normally; for a custom model, place its GGUF file in `models/` and adjust the configuration. Relative paths resolve from the project root
 3. Run `python -m core.diagnostico` – it validates the GGUF header (detects truncated downloads / HTML error pages saved as `.gguf`)
 4. Match the chat format to the model: the shipped Qwen uses `chatml` and `<|im_end|>` as its stop marker. If configuring the older Mistral-Instruct alternative, use `llama-2`, not `mistral-instruct` (the latter drops system messages)
 
@@ -595,6 +734,29 @@ skipped automatically when the libraries are not installed.
 ---
 
 ## 🧠 Memory and context
+
+### Private personalization
+
+Optional `config/data/system_prompt.local.txt` and
+`config/data/user_profile.local.yaml` take precedence over their corresponding
+versioned templates. Paths are selected at process startup; restart after
+adding/removing an override. An existing empty override remains selected, and
+read/parse errors follow the usual prompt/profile diagnostics, not a silent
+fallback. These `.local.*` files (including profile migration backups) are
+ignored by Git. Keep private data out of the versioned templates.
+
+The prompt defines personality and interaction preferences for **both local and
+authorized online generation**. The profile supplies personal context; it is
+not model training. The current legacy-profile mechanism imports its leaves
+into `facts.yaml` on first memory use, backs up the selected profile and empties
+it after a successful migration. A local profile override uses that same
+mechanism, not a separate permanent static store. Existing facts/history are
+not replaced. Original source documents should be retained separately.
+
+Profile facts and instructions consume the context budget; keep them compact
+and test them against the local model's limit. Authorized online generation
+also sends the selected personal memory to the configured provider. Private
+Git exclusions do not make those facts local-only at inference time.
 
 Three separate stores, all injected into the context the same way for every
 backend (online or offline):
@@ -675,7 +837,7 @@ backend (online or offline):
 6. **Local engine integration `llama_cpp` (mode-based model selection with fallback)** – completed ✅  
 7. **Natural local learning (persistent facts managed by natural-language requests)** – completed ✅ (full suite, including the migrated `tests/test_memoria.py`, validated with controlled backends, temporary storage and fresh processes; real-model runs optional)
 8. **Visual interface (UI)** – completed ✅ (dark responsive tkinter chat window with description, mode buttons, status command, local help and animated activity sphere, `python bai.py --ui`; window tests use a virtual display, real-namespace validation remains limited by the host)
-9. **Voice system** – in progress (local Piper speech output, automatic response-language routing across three voices, mute/cancellation and speaking animation implemented; speech starts disabled, without a manual output-voice selector or sample button; local multilingual Whisper microphone transcription with continuous listening, five-second silence, language selector and response/playback pauses implemented; real microphone conversation validation pending; responsive deferred UI closing and immediate history-reset persistence implemented; hotword activation remains a later roadmap item, voice cloning not implemented)
+9. **Voice system** – in progress (local Piper speech output, automatic response-language routing across three voices, mute/cancellation and speaking animation implemented; speech starts disabled, without a manual output-voice selector or sample button; local multilingual Whisper microphone transcription with continuous listening, configurable silence, language selector and response/playback pauses implemented; warm audio workers and model caches implemented; real microphone conversation validation pending; LLM cancellation, bounded closing checks and immediate history-reset persistence implemented; hotword activation remains a later roadmap item, voice cloning not implemented)
 10. **Cross-platform compatibility** – pending (Windows/macOS support not yet implemented or validated)
 11. **Full synchronization across devices** – pending ✨ → version 1.0.0 reached
 
@@ -710,8 +872,25 @@ Initial validation checkpoint on Ubuntu (2026-10-30, before lightweight startup 
   voice and its interruption.
 - Still pending: long conversations with a real local LLM, visual verification
   of closing during that inference, and the remaining phase-by-phase real-use
-  checks. No local `.gguf` model was installed for this checkpoint. Closing still
-  waits for inference to return; it does not cancel it.
+  checks. No local `.gguf` model was installed for this checkpoint. At that
+  checkpoint closing still waited for inference; the later cancellation work
+  below replaces that behavior.
+
+Generation cancellation checkpoint (2026-10-30):
+
+- The isolated regression suite passed 1,271 tests, with 19 skips for unavailable
+  kernel namespaces or optional real-model test dependencies. A subsequent
+  focused run passed all 12 worker tests, including the added real-launcher
+  Ctrl+C regression (supervisor, session, worker and persisted history).
+- Subprocess tests cover a blocked backend that ignores TERM, cleanup of its
+  local child process, cancellation without fallback/history writes, worker
+  reuse and restart, Ctrl+C, and window closure before a blocked call returns.
+- A real installed Qwen/llama.cpp worker was preloaded, interrupted during a
+  synthetic long request, and successfully answered a fresh synthetic question
+  from a new worker. Observed cancellation took about 0.066 seconds; initial
+  loading took 1.12 seconds. No personal context or online service was used.
+  These are individual observations, not guaranteed deadlines or remote-service
+  cancellation acceptance.
 
 Lightweight startup and Copilot integration checkpoint (2026-10-30):
 

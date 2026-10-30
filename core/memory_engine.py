@@ -29,6 +29,7 @@ import shutil
 import stat
 import tempfile
 import yaml
+from config.personalizacion import ruta_personalizacion
 from datetime import datetime, timezone
 import unicodedata
 
@@ -36,7 +37,7 @@ import unicodedata
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY_DIR = os.path.join(_PROJECT_ROOT, "history")
 SESSION_FILE = os.path.join(HISTORY_DIR, "historial.json")
-MEMORY_PATH = os.path.join(_PROJECT_ROOT, "config", "data", "user_profile.yaml")
+MEMORY_PATH = str(ruta_personalizacion("user_profile.yaml"))
 FACTS_PATH = os.path.join(_PROJECT_ROOT, "config", "data", "facts.yaml")
 MAX_MESSAGES = 5000
 _MODO_DIR_PRIVADO = 0o700   # directorios de datos personales: sólo el usuario

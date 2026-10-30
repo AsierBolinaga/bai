@@ -64,8 +64,9 @@ offline:
   max_mensajes_contexto: 20
   motores:
     llama_cpp:
-      # Preparación inicial con red, ANTES de aislar la sesión. Descarga fijada
-      # por revisión, tamaño y SHA256 en core/preparar_modelo.py.
+      # Descargar sólo mediante ./bai.sh --preparar-modelo.
+      # Nombre legado: esta opción sólo habilita verificación local y precarga,
+      # NUNCA descargas al arrancar. Revisión/tamaño/SHA256 en core/preparar_modelo.py.
       model_path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
       descargar_al_arrancar: true
       n_ctx: 4096

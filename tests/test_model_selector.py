@@ -61,6 +61,19 @@ def test_modo_desconocido_en_candidatos(selector_fake):
 
 
 # --------------------------------------------------------------------------- modo offline
+def test_fallo_arranque_respeta_fallback_y_no_contamina_otras_sesiones(selector_fake):
+    sel = selector_fake.crear()
+    sel.marcar_no_disponible("off_a", "fallo al cargar el modelo")
+    estado = sel.estado()["candidatos"]
+    assert not estado[0]["disponible"] and estado[0]["motivo"] == "fallo al cargar el modelo"
+    assert estado[1]["disponible"]
+    respuesta = sel.responder(mensajes_basicos())
+    assert respuesta.motor == "off_b" and respuesta.fallback_usado
+    assert selector_fake.motores.todos["off_a"].llamadas == []
+    nueva = selector_fake.crear()
+    assert nueva.estado()["candidatos"][0]["disponible"]
+
+
 def test_offline_usa_motor_principal(selector_fake):
     sel = selector_fake.crear(config_base("offline"))
     r = sel.responder(mensajes_basicos())

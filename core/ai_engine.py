@@ -7,12 +7,13 @@ import re
 
 from core.ayuda import AYUDA_BAI, es_peticion_ayuda
 from core.contexto import avisos_contexto
-from config.motors_config import PROJECT_ROOT
+from core.cancelacion import comprobar_cancelacion
+from config.personalizacion import ruta_personalizacion
 from core.memory_commands import procesar_comando_memoria
 from core.memory_engine import get_memory_context
 from core.model_selector import AislamientoActivo, ModelSelector, SinMotorDisponible, hay_conexion  # noqa: F401
 
-SYSTEM_PROMPT_PATH = PROJECT_ROOT / "config" / "data" / "system_prompt.txt"
+SYSTEM_PROMPT_PATH = ruta_personalizacion("system_prompt.txt")
 
 # Comandos de control del modo de trabajo.
 #
@@ -54,6 +55,7 @@ def get_selector():
     global _selector
     if _selector is None:
         _selector = ModelSelector()
+        _selector.activar_worker()
     return _selector
 
 
@@ -225,6 +227,7 @@ def ask(user_input, chat_history, selector=None):
 
     # Turno completado: se persiste el historial. La memoria persistente NO se
     # toca: sólo escriben las peticiones explícitas (procesar_comando_memoria).
+    comprobar_cancelacion()
     ultima_respuesta = respuesta
     chat_history.append({"role": "user", "content": user_input})
     chat_history.append({"role": "assistant", "content": respuesta.texto})

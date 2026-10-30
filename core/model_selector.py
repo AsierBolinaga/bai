@@ -48,6 +48,8 @@ from core.motors import registry
 from core.motors.base import MotorError, MotorNoDisponible, recortar_mensajes
 from core import aislamiento
 from core.network_guard import GuardiaRed
+from core.cancelacion import GeneracionCancelada, comprobar_cancelacion
+from core.contexto import notificar_contexto
 
 
 class AislamientoActivo(RuntimeError):
@@ -113,10 +115,12 @@ class ModelSelector:
     """
 
     def __init__(self, config=None, comprobar_conexion=None, obtener_motor=None):
+        self._worker = None
         self.config = config if config is not None else cargar_motors_config()
         self._comprobar_conexion = comprobar_conexion or hay_conexion
         self._obtener_motor = obtener_motor or registry.obtener_motor
         self._modo = self.config["modo_por_defecto"]
+        self._errores_arranque = {}
         self._guardia_sesion = None
         self._aplicar_guardia_sesion()
 
@@ -167,9 +171,25 @@ class ModelSelector:
 
     def cerrar(self):
         """Libera la guardia de sesión (p. ej. al terminar de usar un selector temporal)."""
-        if self._guardia_sesion is not None:
-            self._guardia_sesion.desactivar()
-            self._guardia_sesion = None
+        try:
+            if self._worker is not None:
+                self._worker.cerrar()
+        finally:
+            if self._guardia_sesion is not None:
+                self._guardia_sesion.desactivar()
+                self._guardia_sesion = None
+
+    def activar_worker(self):
+        """Aisla la inferencia de la sesion; los selectores inyectados pueden ser sincronos."""
+        from core.generacion_worker import ProcesoMotor
+        if self._worker is None:
+            self._worker = ProcesoMotor()
+
+    def precargar(self, modulo, opciones):
+        if self._worker is None:
+            return modulo.cargar_modelo(opciones)
+        return self._worker.ejecutar(
+            modulo.__name__, opciones, offline=True, avisar=notificar_contexto)
 
     def __enter__(self):
         return self
@@ -232,11 +252,17 @@ class ModelSelector:
         return online + (self._candidatos_seccion("offline") if fallback_offline else [])
 
     # --------------------------------------------------------- disponibilidad
+    def marcar_no_disponible(self, nombre, motivo):
+        """Inhabilita un motor que falló al arrancar, sólo durante esta sesión."""
+        self._errores_arranque[nombre] = motivo
+
     def comprobar(self, candidato):
         """
         Devuelve (modulo, "") si el candidato puede usarse ahora mismo o
         (None, motivo) en caso contrario. No carga el modelo.
         """
+        if candidato.nombre in self._errores_arranque:
+            return None, self._errores_arranque[candidato.nombre]
         try:
             modulo = self._obtener_motor(candidato.nombre)
         except MotorNoDisponible as e:
@@ -285,6 +311,10 @@ class ModelSelector:
     def _generar(self, modulo, candidato, messages):
         """Invoca al motor. Los motores offline se ejecutan bajo GuardiaRed."""
         mensajes = recortar_mensajes(messages, candidato.max_mensajes)
+        if self._worker is not None:
+            return self._worker.ejecutar(
+                modulo.__name__, candidato.config, mensajes,
+                offline=candidato.tipo == "offline", avisar=notificar_contexto)
         if candidato.tipo != "offline":
             return modulo.responder(mensajes, candidato.config)
         with GuardiaRed() as guardia:
@@ -313,13 +343,18 @@ class ModelSelector:
         candidatos = self.candidatos(modo, fallback_offline=fallback_offline, prioridad=prioridad)
 
         for indice, candidato in enumerate(candidatos):
+            comprobar_cancelacion()
             modulo, motivo = self.comprobar(candidato)
+            comprobar_cancelacion()
             if modulo is None:
                 errores.append((candidato.nombre, motivo))
                 continue
 
             try:
                 texto = self._generar(modulo, candidato, messages)
+                comprobar_cancelacion()
+            except GeneracionCancelada:
+                raise
             except MotorError as e:
                 errores.append((candidato.nombre, str(e)))
                 continue

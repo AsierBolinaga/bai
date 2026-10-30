@@ -15,9 +15,12 @@ MODOS Y PRIVACIDAD
 OFFLINE: es el modo de arranque por defecto. Sólo uso motores locales y no
 contacto servicios externos, ni salto a online si falla un modelo.
 Puedes usar la memoria, la ayuda y el estado sin ningún motor disponible.
-Antes de abrir la sesión, el lanzador comprueba el Qwen ligero configurado:
-si falta, lo descarga de Hugging Face y verifica su SHA256. Esa preparación
-sí necesita internet, pero no envía conversaciones. Después aplica el aislamiento.
+El arranque offline no descarga modelos ni comprueba conectividad.
+Si falta el Qwen configurado, abro en modo degradado; ayuda, memoria y estado
+siguen disponibles. Para descargarlo o verificarlo, cierra B.A.I. y ejecuta
+'./bai.sh --preparar-modelo'. Esa acción explícita necesita red si falta el modelo,
+verifica tamaño y SHA256 y termina sin abrir el chat ni enviar conversaciones.
+Después inicia B.A.I. normalmente; cambiar a Online requiere tu autorización.
 
 DE OFFLINE A ONLINE: pulsa Online o escribe 'pasa a modo online'.
 Con aislamiento de proceso, ofrezco guardar y reiniciar antes de cambiar.
@@ -72,9 +75,18 @@ los hechos persistentes. El historial vacío se guarda inmediatamente; si falla
 el guardado, te aviso. No equivale a borrar todos los archivos de historial.
 Proceso un mensaje a la vez; puedes redimensionar la ventana y desplazarte
 por el chat. Escribe 'salir' o cierra la ventana para terminar.
-Si hay una generación en curso, el cierre espera sin congelar la ventana y
-guarda al terminar. No cancela la generación: si el motor no termina, el cierre
-sigue esperando. Si falla el guardado, la ventana queda abierta para reintentar.
+Mientras genero, Enviar se sustituye por Cancelar; también puedes pulsar Escape.
+Cancelo el proceso del motor y descarto el turno interrumpido, sin probar otro
+motor ni añadir una respuesta parcial al historial. Puedes volver a preguntar;
+tras cancelar, el modelo local tendrá que cargarse de nuevo.
+Cerrar cancela la generación y guarda sólo los turnos completados, sin esperar
+a que responda el backend. Si el guardado no confirma el cierre en tres segundos,
+ofrezco cerrar sin confirmarlo (con riesgo de perder cambios) o seguir esperando.
+Si el guardado falla, la ventana queda abierta para reintentar.
+En consola, Ctrl+C durante una respuesta la cancela; Ctrl+C en la entrada sale.
+Cancelar no deshace órdenes de memoria ya ejecutadas ni retira datos enviados
+online. Detengo el worker y sus hijos locales, pero no puedo garantizar que un
+servidor remoto deje de calcular o facturar una petición que ya recibió.
 
 VOZ LOCAL (VENTANA, FASE 9 EN PROGRESO)
 Puedo leer respuestas y reconocer el micrófono localmente. La clonación de
@@ -83,7 +95,7 @@ El botón 'Voz: OFF' activa la lectura con voz automática según el idioma de l
 'Voz: ON' la silencia y corta el audio. También se detiene al enviar un mensaje
 nuevo o cerrar. Está desactivada al abrir; requiere Piper, un modelo de voz
 instalado y el reproductor aplay con una salida de audio disponible.
-Cada lectura empieza con tres segundos de silencio para dar tiempo a activar
+Cada lectura empieza por defecto con tres segundos de silencio para dar tiempo a activar
 la salida de audio sin perder las primeras palabras.
 Uso Davefx para castellano, Antton para euskera y Northern English Male para
 cualquier otro idioma. La detección es local y puede fallar con textos cortos
@@ -92,9 +104,18 @@ Una vez instalada funciona
 sin internet: no usa servicios online ni descarga modelos automáticamente.
 No es la voz de JARVIS de las películas.
 No hay selector manual ni botón de prueba: sólo estas tres voces automáticas.
+Las voces son independientes: basta instalar una con sus archivos .onnx y
+.onnx.json. Si falta la correspondiente al idioma, uso una instalada en orden
+castellano, euskera, inglés, y muestro un aviso sin apagar Voz. No traduzco el
+texto: la pronunciación con otra voz puede no ser adecuada. Si no queda ninguna
+voz completa, aviso del error; instala una y vuelve a activar Voz. Un modelo
+corrupto o un fallo de reproducción sigue siendo un error, no una voz ausente.
 Debajo de Voz, 'Escucha: OFF' activa el micrófono continuo; 'Escucha: ON' lo apaga
 y descarta la frase pendiente. Arranca apagado y es independiente de la salida de voz.
-Después de detectar habla, espero cinco segundos de silencio y envío la frase
+Cada captura calibra el ruido durante un segundo: guarda silencio hasta ver
+'Escuchando'. Después muestra 'Voz detectada' y la cuenta de silencio.
+Si hablas durante la calibración o muy bajo, puede no detectar tu voz.
+Después de detectar habla, espero por defecto cinco segundos de silencio y envío la frase
 automáticamente. El silencio inicial no envía mensajes. La transcripción y la respuesta
 añaden tiempo de espera. Pauso el micrófono mientras transcribo, respondo o leo en voz
 alta; después vuelvo a escuchar. Lo que digas durante esa pausa no se recoge.
@@ -104,6 +125,13 @@ Cambiar el idioma descarta la captura pendiente, sin modificar las voces de sali
 Requiere requirements-escucha.txt, PortAudio, un micrófono disponible y preparar
 el modelo con 'venv/bin/python -m core.escucha --preparar' antes de arrancar.
 Uso Whisper small multilingüe en CPU, sin traducir ni enviar audio a servicios externos.
+Whisper permanece cargado mientras Escucha está ON; Piper conserva las voces usadas
+mientras Voz está ON. Las pausas no recargan los modelos. OFF y el cierre liberan
+los workers y su memoria. Esto reduce las cargas repetidas, pero ocupa más RAM.
+En config/audio_config.yaml puedes ajustar silencio_escucha (0.3–30 s) y
+silencio_reproduccion (0–10 s). Apaga y enciende la función para releerlo.
+Los valores iniciales siguen siendo 5 y 3 s; bajar el segundo puede volver a cortar
+las primeras palabras. La calibración, transcripción y generación añaden su tiempo.
 No guardo grabaciones: la transcripción entra al chat y al historial como un mensaje
 escrito. En modo online, esa transcripción se envía al motor online como cualquier texto.
 El ruido, el acento y frases cortas pueden producir errores; no se garantiza exactitud.

@@ -465,20 +465,45 @@ def voz_fake(ventana_tk):
         activo = False
         error = None
         textos = []
+        avisos = []
+        cierres = 0
+        pausas = 0
 
         def hablar(self, texto):
             self.textos.append(texto)
             self.activo = True
 
+        def activar(self):
+            pass
+
         def comprobar(self):
             return self.activo, self.error
 
+        def recoger_avisos(self):
+            avisos, self.avisos = self.avisos, []
+            return avisos
+
         def detener(self):
+            self.cierres += 1
+            self.activo = False
+
+        def pausar(self):
+            self.pausas += 1
             self.activo = False
 
     voz = Voz()
     ventana_tk._voz = voz
     return voz
+
+
+def test_aviso_de_voz_alternativa_se_muestra_sin_apagar_voz(ventana_tk, voz_fake):
+    v = ventana_tk
+    v._alternar_voz()
+    voz_fake.activo = True
+    voz_fake.avisos = ["Falta la voz de euskera. Uso la voz de castellano como alternativa."]
+    _esperar(v, lambda: "castellano como alternativa" in _chat(v))
+    assert v._voz_activada and voz_fake.activo and voz_fake.cierres == 0
+    assert _chat(v).count("castellano como alternativa") == 1
 
 
 def test_voz_opcional_anima_hasta_fin_audio_y_se_puede_silenciar(ventana_tk, voz_fake):
@@ -514,7 +539,7 @@ def test_voz_se_corta_con_nuevo_mensaje_y_al_cerrar(ventana_tk, voz_fake):
     assert not voz_fake.activo
 
 
-def test_cierre_durante_generacion_no_bloquea_tk_y_guarda_al_final(ventana_tk, entorno):
+def test_cierre_no_espera_backend_y_no_guarda_respuesta_tardia(ventana_tk, entorno):
     v = ventana_tk
     entra, sale = threading.Event(), threading.Event()
 
@@ -533,16 +558,66 @@ def test_cierre_durante_generacion_no_bloquea_tk_y_guarda_al_final(ventana_tk, e
         v.cerrar()
         v.cerrar()
         assert time.monotonic() - inicio < 0.5
-        latidos = []
-        v.raiz.after(10, lambda: latidos.append(True))
-        _esperar(v, lambda: bool(latidos))
-        assert not v._cerrada and v._cerrando
-        v.enviar("no debe entrar")
-        assert "no debe entrar" not in _chat(v)
+        _esperar(v, lambda: v._cerrada, segundos=1)
+        assert not sale.is_set()
+        assert entorno.guardado() == [] and v.controlador.historial == []
     finally:
         sale.set()
-    _esperar(v, lambda: v._cerrada)
-    assert entorno.guardado()[-1]["content"] == "respuesta final"
+        v._hilo_turno.join(2)
+    assert entorno.guardado() == [] and v.controlador.historial == []
+
+
+def test_cancelar_desde_boton_descarta_turno_y_permite_siguiente(ventana_tk, entorno):
+    from core.ui_controlador import MENSAJE_CANCELADO
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+    original = v.controlador._preguntar
+
+    def preguntar(texto, historial):
+        entra.set()
+        assert sale.wait(5)
+        historial.append({"role": "assistant", "content": "tardia"})
+        return "tardia"
+
+    v.controlador._preguntar = preguntar
+    v.enviar("bloquear")
+    assert entra.wait(2)
+    v.raiz.update()
+    assert v.boton_cancelar.winfo_ismapped()
+    v.boton_cancelar._comando()
+    sale.set()
+    _esperar(v, lambda: MENSAJE_CANCELADO in _chat(v))
+    assert not v.controlador.historial and "tardia" not in _chat(v)
+    assert not (entorno.dir / "historial.json").exists()
+    v.controlador._preguntar = original
+    v.enviar("nueva")
+    _esperar(v, lambda: "respuesta de off_a" in _chat(v))
+    assert len(v.controlador.historial) == 2
+
+
+def test_cierre_acotado_ofrece_salir_si_guardado_no_responde(ventana_tk, monkeypatch):
+    from core import ui_tk
+    v = ventana_tk
+    entra, sale = threading.Event(), threading.Event()
+    confirmaciones = []
+
+    def guardar(historial):
+        entra.set()
+        assert sale.wait(5)
+        return True
+
+    v.controlador._guardar = guardar
+    monkeypatch.setattr(ui_tk, "PLAZO_CIERRE_SEGUNDOS", 0.1)
+    monkeypatch.setattr(ui_tk.messagebox, "askyesno",
+                        lambda *a, **kw: confirmaciones.append(a) or True)
+    try:
+        v.cerrar()
+        assert entra.wait(1)
+        _esperar(v, lambda: v._cerrada, segundos=1)
+        assert len(confirmaciones) == 1 and not sale.is_set()
+        assert v._reinicio is None
+    finally:
+        sale.set()
 
 
 @pytest.mark.parametrize("excepcion", [False, True])
@@ -588,6 +663,17 @@ def test_sin_selector_ni_boton_de_prueba(ventana_tk):
     assert not v._voz_activada
 
 
+def test_ui_presenta_aviso_de_arranque_degradado_antes_del_bucle(ventana_tk, monkeypatch):
+    from core import ui_tk
+    v = ventana_tk
+    monkeypatch.setattr(ui_tk, "VentanaBai", lambda controlador, raiz: v)
+    textos = []
+    monkeypatch.setattr(v, "ejecutar", lambda: textos.append(_chat(v)))
+    assert ui_tk.iniciar_ui(raiz=v.raiz, aviso_arranque="Modo degradado: modelo corrupto") == 0
+    assert "Modo degradado: modelo corrupto" in textos[0]
+    assert v._cerrada
+
+
 @pytest.fixture
 def escucha_fake(ventana_tk):
     class Escucha:
@@ -595,6 +681,8 @@ def escucha_fake(ventana_tk):
         inicios = 0
         eventos = []
         error = None
+        cierres = 0
+        pausas = 0
 
         def iniciar(self, idioma=None):
             if self.error:
@@ -604,6 +692,12 @@ def escucha_fake(ventana_tk):
             self.idioma = idioma
 
         def detener(self):
+            self.cierres += 1
+            self.activa = False
+            self.eventos = []
+
+        def pausar(self):
+            self.pausas += 1
             self.activa = False
             self.eventos = []
 
@@ -646,6 +740,11 @@ def test_escucha_envia_una_frase_y_pausa_hasta_terminar_voz(ventana_tk, escucha_
     _esperar(v, lambda: escucha_fake.inicios == 2)
     assert escucha_fake.activa
     assert _chat(v).count("Boli: hola") == 1
+    assert escucha_fake.pausas > 0 and escucha_fake.cierres == 0
+    assert voz_fake.pausas > 0 and voz_fake.cierres == 0
+    v._alternar_escucha()
+    v._alternar_voz()
+    assert escucha_fake.cierres == 1 and voz_fake.cierres == 1
 
 
 def test_escucha_sin_tts_se_reanuda_tras_respuesta(ventana_tk, escucha_fake):

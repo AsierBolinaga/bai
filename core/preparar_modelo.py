@@ -27,26 +27,29 @@ def _verificar(ruta):
         raise MotorError(f"SHA256 incorrecto: {ruta}. Aparta el archivo para volver a descargarlo.")
 
 
-def preparar_modelo(config, salida=print):
+def preparar_modelo(config, salida=print, *, permitir_descarga=False):
     opciones = config["offline"]["motores"].get(config["offline"]["motor"], {})
-    if not opciones.get("descargar_al_arrancar", False):
+    if not permitir_descarga and not opciones.get("descargar_al_arrancar", False):
         return
     if not opciones.get("model_path"):
         raise MotorError("La preparación automática necesita 'model_path'.")
     ruta = Path(resolver_ruta(opciones.get("model_path")))
     if config["offline"]["motor"] != "llama_cpp" or ruta.name != ARCHIVO:
-        raise MotorError("La descarga automática sólo admite el modelo Qwen ligero verificado.")
+        raise MotorError("La preparación verificada sólo admite el modelo Qwen ligero conocido.")
     if not libreria_instalada("llama_cpp"):
         raise MotorError("Falta llama-cpp-python. Instala requirements.txt antes de descargar el modelo.")
     if ruta.exists():
         salida("[B.A.I] Verificando el modelo local...")
         _verificar(ruta)
         return
+    if not permitir_descarga:
+        raise MotorError("Falta el modelo local. No se descargará durante el arranque. "
+                         "Ejecuta './bai.sh --preparar-modelo' con conexión y vuelve a iniciar B.A.I.")
     ruta.parent.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(ruta.parent).free < TAMANO + 64 * 1024 * 1024:
         raise MotorError("No hay espacio suficiente para descargar el modelo local (1,12 GB).")
-    salida("[B.A.I] Preparación con red: descargo Qwen2.5 1.5B Q4_K_M (1,12 GB) "
-           "de Hugging Face. No envío conversaciones. Después activo el modo offline.")
+    salida("[B.A.I] Preparación explícita con red: descargo Qwen2.5 1.5B Q4_K_M (1,12 GB) "
+           "de Hugging Face. No envío conversaciones ni abro una sesión de chat.")
     temporal = None
     try:
         with tempfile.NamedTemporaryFile(dir=ruta.parent, prefix=ruta.name + ".", suffix=".part",
@@ -71,7 +74,7 @@ def preparar_modelo(config, salida=print):
         salida("[B.A.I] Modelo instalado y SHA256 verificado.")
     except requests.RequestException as error:
         raise MotorError(f"No se pudo descargar el modelo: {error}. "
-                         "Reintenta al arrancar con conexión; no se usará la nube como sustituto.") from error
+                         "Reintenta './bai.sh --preparar-modelo' con conexión; no se usará la nube como sustituto.") from error
     finally:
         if temporal is not None:
             temporal.unlink(missing_ok=True)

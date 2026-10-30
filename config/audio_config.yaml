@@ -1,0 +1,4 @@
+# Se relee al activar Voz o Escucha. Reducir el segundo valor puede cortar
+# las primeras palabras en salidas de audio que tardan en despertarse.
+silencio_escucha: 5
+silencio_reproduccion: 3

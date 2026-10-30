@@ -40,6 +40,19 @@ def _cfg(modelo_real, **extra):
 
 @pytest.mark.skipif(not HAY_LLAMA, reason="llama-cpp-python no instalado")
 class TestLlamaCppReal:
+    def test_worker_precarga_y_genera_con_adaptador_real(self, modelo_real):
+        from core.generacion_worker import ProcesoMotor
+        from core.motors import llama_cpp_engine
+        proceso = ProcesoMotor()
+        try:
+            proceso.ejecutar(llama_cpp_engine.__name__, _cfg(modelo_real), offline=True)
+            for _ in range(2):
+                texto = proceso.ejecutar(
+                    llama_cpp_engine.__name__, _cfg(modelo_real), MENSAJES, offline=True)
+                assert isinstance(texto, str) and texto
+        finally:
+            proceso.cerrar()
+
     def test_disponible_y_responde_sin_red(self, modelo_real, monkeypatch):
         from core.motors import llama_cpp_engine as motor
         monkeypatch.setattr(motor, "_modelos", {})

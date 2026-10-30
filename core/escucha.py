@@ -2,12 +2,11 @@
 import importlib.util
 import json
 import math
-import queue
+from contextlib import ExitStack
 from pathlib import Path
-import subprocess
 import sys
-import tempfile
-import threading
+from config.audio_config import cargar_audio_config
+from core.audio_worker import ProcesoAudio
 
 DIRECTORIO_MODELO = Path(__file__).resolve().parents[1] / "models/escucha/whisper-small"
 REPOSITORIO = "Systran/faster-whisper-small"
@@ -17,18 +16,35 @@ FRECUENCIA = 16000
 MUESTRAS_BLOQUE = 480
 SILENCIO_SEGUNDOS = 5
 MAXIMO_SEGUNDOS = 90
+BLOQUES_CALIBRACION = math.ceil(FRECUENCIA / MUESTRAS_BLOQUE)
+
+
+class FiltroRuido:
+    """Combina VAD con energía relativa al ruido medido antes de la frase."""
+
+    def __init__(self, energias):
+        from statistics import median
+
+        self.umbral = max(200, median(energias) * 4)
+        self._consecutivos = 0
+
+    def es_voz(self, energia, vad):
+        self._consecutivos = self._consecutivos + 1 if vad and energia >= self.umbral else 0
+        # Un golpe aislado no debe reiniciar los cinco segundos de silencio.
+        return self._consecutivos >= 5
 
 
 class DetectorFrase:
     """Delimita frases con VAD: cinco segundos completos desde la última voz."""
 
-    def __init__(self):
+    def __init__(self, silencio=SILENCIO_SEGUNDOS):
+        self._silencio_segundos = silencio
         self.bloques = []
         self.previos = []
         self.iniciada = False
         self.silencio = 0
         self.voz = 0
-        self.limite_silencio = math.ceil(SILENCIO_SEGUNDOS * FRECUENCIA / MUESTRAS_BLOQUE)
+        self.limite_silencio = math.ceil(silencio * FRECUENCIA / MUESTRAS_BLOQUE)
         self.limite_total = math.ceil(MAXIMO_SEGUNDOS * FRECUENCIA / MUESTRAS_BLOQUE)
 
     def agregar(self, bloque, es_voz):
@@ -44,7 +60,7 @@ class DetectorFrase:
         self.voz += int(es_voz)
         if self.silencio >= self.limite_silencio:
             if self.voz < 10:
-                self.__init__()
+                self.__init__(self._silencio_segundos)
                 return None
             return b"".join(self.bloques[:-self.silencio])
         if len(self.bloques) >= self.limite_total:
@@ -54,10 +70,8 @@ class DetectorFrase:
 
 class EscuchaLocal:
     def __init__(self):
-        self._proceso = None
-        self._errores = None
-        self._hilo = None
-        self._eventos = queue.Queue()
+        self._worker = ProcesoAudio("escucha")
+        self._opciones = None
 
     @property
     def motivo_no_disponible(self):
@@ -69,103 +83,91 @@ class EscuchaLocal:
         return None
 
     def iniciar(self, idioma=None):
-        self.detener()
         if idioma not in (None, "es", "eu", "en"):
             raise ValueError(f"Idioma de escucha no admitido: {idioma}")
         motivo = self.motivo_no_disponible
         if motivo:
             raise RuntimeError(motivo)
-        errores = tempfile.TemporaryFile()
-        try:
-            proceso = subprocess.Popen(
-                [sys.executable, str(Path(__file__).resolve()), "--capturar", idioma or "auto"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errores,
-                text=True, encoding="utf-8")
-        except OSError:
-            errores.close()
-            raise
-        self._proceso = proceso
-        self._errores = errores
-        eventos = self._eventos
-
-        def recibir():
-            try:
-                for linea in proceso.stdout:
-                    try:
-                        evento = json.loads(linea)
-                        if (not isinstance(evento, list) or len(evento) != 2
-                                or not all(isinstance(valor, str) for valor in evento)
-                                or evento[0] not in ("estado", "texto")
-                                or (evento[0] == "texto" and not evento[1].strip())):
-                            raise ValueError("evento de micrófono no válido")
-                        eventos.put(tuple(evento))
-                    except (ValueError, TypeError) as error:
-                        eventos.put(("error", f"Respuesta del proceso de escucha no válida: {error}"))
-                codigo = proceso.wait()
-                if codigo:
-                    errores.seek(0)
-                    detalle = errores.read().decode("utf-8", errors="replace").strip()
-                    eventos.put(("error", detalle or f"El proceso de escucha terminó con código {codigo}."))
-            finally:
-                eventos.put(("fin", ""))
-
-        self._hilo = threading.Thread(target=recibir, name="bai-microfono", daemon=True)
-        self._hilo.start()
+        if self._opciones is None:
+            self._opciones = cargar_audio_config()
+        self._worker.iniciar(self._opciones)
+        self._worker.enviar("escuchar", idioma)
 
     def comprobar(self):
-        eventos = []
-        while True:
-            try:
-                eventos.append(self._eventos.get_nowait())
-            except queue.Empty:
-                break
-        return eventos
+        return self._worker.comprobar()
+
+    def pausar(self):
+        self._worker.cancelar()
 
     def detener(self):
-        if self._proceso is not None:
-            if self._proceso.poll() is None:
-                self._proceso.terminate()
-                try:
-                    self._proceso.wait(timeout=0.3)
-                except subprocess.TimeoutExpired:
-                    self._proceso.kill()
-                    self._proceso.wait()
-            self._hilo.join()
-            self._proceso.stdout.close()
-            self._errores.close()
-            self._proceso = self._errores = self._hilo = None
-        self._eventos = queue.Queue()
+        self._worker.cerrar()
+        self._opciones = None
 
 
 def _emitir(tipo, texto):
     print(json.dumps([tipo, texto], ensure_ascii=True), flush=True)
 
 
-def capturar_frase():
+def capturar_frase(*, trabajo=None, silencio=SILENCIO_SEGUNDOS, emitir=_emitir):
+    import numpy as np
     import sounddevice as sd
     import webrtcvad
 
-    detector = DetectorFrase()
+    detector = DetectorFrase(silencio)
     vad = webrtcvad.Vad(2)
     with sd.RawInputStream(samplerate=FRECUENCIA, channels=1, dtype="int16",
-                           blocksize=MUESTRAS_BLOQUE) as microfono:
-        _emitir("estado", "Escuchando")
+                           blocksize=MUESTRAS_BLOQUE) as microfono, ExitStack() as recursos:
+        if trabajo is not None:
+            trabajo.recurso(microfono.abort)
+            recursos.callback(trabajo.liberar)
+        emitir("estado", "Calibrando: guarda silencio 1 s")
+        energias = []
+        filtro = None
+        ultimo_estado = None
         while True:
+            if trabajo is not None:
+                trabajo.comprobar()
             bloque, desbordado = microfono.read(MUESTRAS_BLOQUE)
             if desbordado:
                 raise RuntimeError("El micrófono ha perdido audio. Revisa el dispositivo y vuelve a activar Escucha.")
             pcm = bytes(bloque)
-            frase = detector.agregar(pcm, vad.is_speech(pcm, FRECUENCIA))
+            muestras = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+            energia = float(np.sqrt(np.mean(muestras * muestras)))
+            if filtro is None:
+                energias.append(energia)
+                if len(energias) == BLOQUES_CALIBRACION:
+                    filtro = FiltroRuido(energias)
+                    emitir("estado", "Escuchando")
+                continue
+            es_voz = filtro.es_voz(energia, vad.is_speech(pcm, FRECUENCIA))
+            frase = detector.agregar(pcm, es_voz)
             if frase is not None:
                 return frase
+            if not detector.iniciada:
+                estado = "Escuchando"
+            elif es_voz:
+                estado = "Voz detectada"
+            else:
+                restante = math.ceil((detector.limite_silencio - detector.silencio)
+                                      * MUESTRAS_BLOQUE / FRECUENCIA)
+                estado = f"Silencio: {restante} s"
+            if estado != ultimo_estado:
+                emitir("estado", estado)
+                ultimo_estado = estado
 
 
-def transcribir(audio, idioma=None):
-    import numpy as np
+def cargar_modelo():
     from faster_whisper import WhisperModel
 
-    modelo = WhisperModel(str(DIRECTORIO_MODELO), device="cpu", compute_type="int8",
-                          cpu_threads=4, local_files_only=True)
+    return WhisperModel(str(DIRECTORIO_MODELO), device="cpu", compute_type="int8",
+                        cpu_threads=4, local_files_only=True)
+
+
+def transcribir(audio, idioma=None, *, modelo=None):
+    import numpy as np
+
+    if modelo is None:
+        modelo = cargar_modelo()
     segmentos, _ = modelo.transcribe(
         np.frombuffer(audio, dtype="<i2").astype(np.float32) / 32768,
         task="transcribe", language=idioma, beam_size=5, condition_on_previous_text=False,

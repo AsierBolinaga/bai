@@ -2,6 +2,7 @@ from core.config import nombre_ia, master_name
 from core.memory_engine import save_chat_history, load_full_history
 from core.ai_engine import ask, describir_estado
 from core.reinicio import aviso_reinicio, codigo_modo, modo_reinicio
+from copy import deepcopy
 
 chat_history = load_full_history()
 
@@ -43,7 +44,13 @@ def run_assistant():
             # Las peticiones de memoria ("recuerda que...", "olvida...", "¿qué
             # recuerdas?") las resuelve ask() localmente y con informe honesto:
             # sólo confirma cuando la escritura en disco ha terminado bien.
-            response = ask(user_input, chat_history)
+            try:
+                historial_turno = deepcopy(chat_history)
+                response = ask(user_input, historial_turno)
+            except KeyboardInterrupt:
+                print(f"\n[{nombre_ia}] Generación cancelada; puedes enviar otra pregunta.")
+                continue
+            chat_history[:] = historial_turno
             print(f"\n[{nombre_ia}] {response}\n")
             save_chat_history(chat_history)
 

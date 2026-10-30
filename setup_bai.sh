@@ -17,7 +17,7 @@ echo "[B.A.I] Instalando dependencias..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# El lanzador prepara el modelo ligero antes de aislar la sesión offline.
+# Preparación del modelo separada: ./bai.sh --preparar-modelo (necesita red).
 # Copilot es opcional: pip install -r requirements-copilot.txt y copilot login.
 
 # Lanzar B.A.I.

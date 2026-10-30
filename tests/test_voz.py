@@ -1,5 +1,4 @@
 """Voz local con procesos controlados: no reproduce audio en la suite."""
-import subprocess
 import io
 import sys
 from types import SimpleNamespace
@@ -17,24 +16,26 @@ def test_davefx_es_modelo_castellano():
 @pytest.fixture
 def proceso(monkeypatch, tmp_path):
     class Proceso:
-        codigo = None
         terminado = False
-        matado = False
-        atasco = False
+        eventos = []
+        inicios = 0
+        ordenes = []
 
-        def poll(self):
-            return self.codigo
+        def iniciar(self, opciones):
+            self.inicios += 1
 
-        def terminate(self):
+        def enviar(self, orden, contenido):
+            self.ordenes.append((orden, contenido))
+
+        def comprobar(self):
+            eventos, self.eventos = self.eventos, []
+            return eventos
+
+        def cancelar(self):
+            self.eventos = []
+
+        def cerrar(self):
             self.terminado = True
-
-        def wait(self, timeout=None):
-            if self.atasco and not self.matado:
-                raise subprocess.TimeoutExpired("voz", timeout)
-            self.codigo = -15
-
-        def kill(self):
-            self.matado = True
 
     p = Proceso()
     for ruta in voz.VOCES.values():
@@ -46,49 +47,38 @@ def proceso(monkeypatch, tmp_path):
     monkeypatch.setattr(voz.importlib.util, "find_spec", lambda nombre: object())
     monkeypatch.setattr(voz.shutil, "which", lambda nombre: "/usr/bin/aplay")
 
-    def crear(argumentos, **kw):
-        p.argumentos = argumentos
-        p.entrada = kw["stdin"].read()
-        p.errores = kw["stderr"]
-        return p
-
-    monkeypatch.setattr(voz.subprocess, "Popen", crear)
+    monkeypatch.setattr(voz, "ProcesoAudio", lambda tipo: p)
     return p
 
 
-def test_lectura_usa_stdin_sin_shell_y_libera_recursos(proceso):
+def test_lectura_usa_worker_y_lo_conserva_al_terminar(proceso):
     lector = voz.VozLocal()
     texto = "--help; $(no ejecutar) español"
     lector.hablar(texto)
-    assert proceso.entrada == texto.encode("utf-8")
-    assert texto not in proceso.argumentos
-    assert proceso.argumentos[-3].endswith("/core/voz.py")
-    assert proceso.argumentos[-2] == "--reproducir"
-    assert proceso.argumentos[-1] == str(voz.DIRECTORIO_VOCES)
+    assert proceso.ordenes == [("hablar", texto)]
     assert lector.comprobar() == (True, None)
-    proceso.codigo = 0
+    proceso.eventos = [("fin", "")]
     assert lector.comprobar() == (False, None)
-    assert proceso.errores.closed
+    assert not proceso.terminado
+    lector.hablar("otra frase")
+    assert len(proceso.ordenes) == 2
 
 
-def test_fallo_audio_es_visible_y_libera_recursos(proceso):
+def test_fallo_audio_es_visible(proceso):
     lector = voz.VozLocal()
     lector.hablar("hola")
-    proceso.errores.write(b"audio no disponible")
-    proceso.codigo = 1
+    proceso.eventos = [("error", "audio no disponible")]
     activo, error = lector.comprobar()
     assert not activo and "audio no disponible" in error
-    assert proceso.errores.closed
 
 
-@pytest.mark.parametrize("atasco", [False, True])
-def test_detener_cancela_solo_el_proceso_propio(proceso, atasco):
+def test_pausar_conserva_worker_y_desactivar_lo_cierra(proceso):
     lector = voz.VozLocal()
     lector.hablar("hola")
-    proceso.atasco = atasco
+    lector.pausar()
+    assert not proceso.terminado and lector.comprobar() == (False, None)
     lector.detener()
-    assert proceso.terminado and proceso.matado == atasco
-    assert proceso.errores.closed
+    assert proceso.terminado
     assert lector.comprobar() == (False, None)
     lector.detener()
 
@@ -101,9 +91,57 @@ def test_sin_piper_se_informa(monkeypatch):
         lector.hablar("hola")
 
 
-def test_modelo_ausente_se_informa(proceso, monkeypatch, tmp_path):
+def test_modelo_ausente_no_bloquea_otras_voces(proceso, tmp_path):
     (tmp_path / voz.VOCES["eu"]).unlink()
-    assert "Falta el modelo" in voz.VozLocal().motivo_no_disponible
+    lector = voz.VozLocal()
+    assert lector.disponible and lector.motivo_no_disponible is None
+    lector.hablar("hola")
+    assert proceso.ordenes == [("hablar", "hola")]
+
+
+@pytest.mark.parametrize("instaladas", [
+    (), ("es",), ("eu",), ("en",), ("es", "eu"), ("es", "en"), ("eu", "en"), ("es", "eu", "en"),
+])
+@pytest.mark.parametrize("idioma", ["es", "eu", "en", "fr"])
+def test_seleccion_independiente_y_prioridad_de_alternativas(
+        proceso, monkeypatch, tmp_path, instaladas, idioma):
+    for clave, ruta in voz.VOCES.items():
+        if clave not in instaladas:
+            (tmp_path / ruta).unlink()
+    monkeypatch.setattr(voz, "detectar_idioma", lambda texto: idioma)
+    lector = voz.VozLocal()
+    avisos = []
+    assert lector.disponible == bool(instaladas)
+    if not instaladas:
+        assert "al menos una voz" in lector.motivo_no_disponible
+        with pytest.raises(RuntimeError, match="ninguna voz Piper completa"):
+            voz.modelo_para_texto("texto", tmp_path, avisar=avisos.append)
+        with pytest.raises(RuntimeError, match="ninguna voz Piper completa"):
+            lector.activar()
+        return
+    preferida = idioma if idioma in voz.VOCES else "en"
+    elegida = preferida if preferida in instaladas else next(
+        clave for clave in voz.PRIORIDAD_ALTERNATIVAS if clave in instaladas)
+    assert voz.modelo_para_texto("texto", tmp_path, avisar=avisos.append) == tmp_path / voz.VOCES[elegida]
+    if elegida == preferida:
+        assert avisos == []
+    else:
+        assert len(avisos) == 1
+        assert f"voz de {voz.NOMBRES_VOCES[elegida]} como alternativa" in avisos[0]
+        assert "sin traducir" in avisos[0]
+
+
+def test_aviso_no_apaga_voz_y_se_consume_una_vez(proceso):
+    lector = voz.VozLocal()
+    lector.hablar("kaixo")
+    proceso.eventos = [("aviso", "Uso la voz de castellano como alternativa.")]
+    assert lector.comprobar() == (True, None)
+    assert lector.recoger_avisos() == ["Uso la voz de castellano como alternativa."]
+    assert lector.recoger_avisos() == []
+    proceso.eventos = [("fin", "")]
+    assert lector.comprobar() == (False, None)
+    lector.hablar("hola")
+    assert not proceso.terminado
 
 
 def test_reproductor_ausente_se_informa(proceso, monkeypatch):
@@ -124,13 +162,15 @@ def test_deteccion_local_de_idioma(texto, idioma):
 
 @pytest.mark.parametrize("idioma,clave", [("es", "es"), ("eu", "eu"), ("en", "en"),
                                         ("fr", "en"), ("ja", "en")])
-def test_ruta_automatica_y_error_si_falta(proceso, monkeypatch, tmp_path, idioma, clave):
+def test_ruta_automatica_e_ignora_modelos_incompletos(proceso, monkeypatch, tmp_path, idioma, clave):
     monkeypatch.setattr(voz, "detectar_idioma", lambda texto: idioma)
     esperado = tmp_path / voz.VOCES[clave]
     assert voz.modelo_para_texto("texto", tmp_path) == esperado
     esperado.with_suffix(".onnx.json").unlink()
-    with pytest.raises(RuntimeError, match="Falta la voz automática"):
-        voz.modelo_para_texto("texto", tmp_path)
+    avisos = []
+    alternativa = voz.modelo_para_texto("texto", tmp_path, avisar=avisos.append)
+    assert alternativa != esperado and len(avisos) == 1
+    assert clave not in voz.modelos_instalados(tmp_path)
 
 
 def test_sin_detector_se_informa(proceso, monkeypatch):
@@ -140,21 +180,21 @@ def test_sin_detector_se_informa(proceso, monkeypatch):
 
 
 def test_fallo_al_arrancar_libera_archivo(proceso, monkeypatch):
-    errores = []
-
-    def fallar(*args, **kw):
-        errores.append(kw["stderr"])
+    def fallar(*args):
         raise OSError("no se pudo arrancar")
 
-    monkeypatch.setattr(voz.subprocess, "Popen", fallar)
+    monkeypatch.setattr(proceso, "iniciar", fallar)
     with pytest.raises(OSError, match="no se pudo arrancar"):
         voz.VozLocal().hablar("hola")
-    assert errores[0].closed
 
 
 @pytest.mark.parametrize("canales", [1, 2])
-@pytest.mark.parametrize("fallo", [None, "audio", "cancelar"])
-def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo, canales):
+@pytest.mark.parametrize("fallo", [None, "audio", "cancelar", "pausar"])
+@pytest.mark.parametrize("segundos", [0, 0.2, 3])
+def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo, canales, segundos):
+    from core.audio_worker import Trabajo, Cancelado
+
+    trabajo = Trabajo() if fallo == "pausar" else None
     procesos = []
     audio = SimpleNamespace(sample_rate=22050, sample_channels=canales,
                             audio_int16_bytes=b"\x01\x02" * 100 * canales)
@@ -170,6 +210,8 @@ def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo, canales)
             yield audio
             if fallo == "cancelar":
                 voz._cancelar(None, None)
+            if fallo == "pausar":
+                trabajo.cancelar()
             yield audio
 
     class Entrada(io.BytesIO):
@@ -202,18 +244,25 @@ def test_worker_reproduce_pcm_y_cancela_reproductor(monkeypatch, fallo, canales)
 
     monkeypatch.setitem(sys.modules, "piper", SimpleNamespace(PiperVoice=Motor, SynthesisConfig=lambda **kw: kw))
     monkeypatch.setattr(voz.subprocess, "Popen", crear)
+    def reproducir():
+        voz._reproducir("hola", "voz.onnx", trabajo=trabajo, silencio=segundos)
+
     if fallo == "cancelar":
         with pytest.raises(SystemExit):
-            voz._reproducir("hola", "voz.onnx")
+            reproducir()
+        assert procesos[0].terminado
+    elif fallo == "pausar":
+        with pytest.raises(Cancelado):
+            reproducir()
         assert procesos[0].terminado
     elif fallo == "audio":
         with pytest.raises(RuntimeError, match="reproductor"):
-            voz._reproducir("hola", "voz.onnx")
+            reproducir()
     else:
-        voz._reproducir("hola", "voz.onnx")
+        reproducir()
         assert procesos[0].codigo == 0
-    silencio = b"\0" * (22050 * 3 * canales * 2)
+    silencio = b"\0" * (round(22050 * segundos) * canales * 2)
     entrada = procesos[0].stdin
     contenido = entrada.contenido if entrada.closed else entrada.getvalue()
-    assert contenido == silencio + audio.audio_int16_bytes * (1 if fallo == "cancelar" else 2)
+    assert contenido == silencio + audio.audio_int16_bytes * (1 if fallo in ("cancelar", "pausar") else 2)
     assert len(procesos) == 1

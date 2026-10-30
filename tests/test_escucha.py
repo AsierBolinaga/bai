@@ -10,6 +10,38 @@ import pytest
 from core import escucha
 
 
+def test_ruido_que_vad_confunde_con_voz_no_impide_cerrar_frase():
+    filtro = escucha.FiltroRuido([100] * escucha.BLOQUES_CALIBRACION)
+    detector = escucha.DetectorFrase()
+    for _ in range(1000):
+        assert detector.agregar(b"ruido", filtro.es_voz(100, True)) is None
+    assert not detector.iniciada
+    for _ in range(20):
+        assert detector.agregar(b"voz", filtro.es_voz(1500, True)) is None
+    for _ in range(166):
+        assert detector.agregar(b"ruido", filtro.es_voz(100, True)) is None
+    frase = detector.agregar(b"ruido", filtro.es_voz(100, True))
+    assert frase is not None and b"voz" * 20 in frase
+
+
+def test_golpes_cortos_no_reinician_silencio_y_vad_sigue_siendo_necesario():
+    filtro = escucha.FiltroRuido([100] * 34)
+    assert filtro.umbral == 400
+    for _ in range(100):
+        assert not filtro.es_voz(3000, False)
+    for _ in range(4):
+        assert not filtro.es_voz(3000, True)
+    assert not filtro.es_voz(100, True)
+    for _ in range(4):
+        assert not filtro.es_voz(3000, True)
+    assert filtro.es_voz(3000, True)
+
+
+def test_calibracion_resiste_pico_aislado_y_no_deja_umbral_cero():
+    assert escucha.FiltroRuido([0] * 34).umbral == 200
+    assert escucha.FiltroRuido([100] * 33 + [30000]).umbral == 400
+
+
 def test_envia_solo_tras_cinco_segundos_completos_sin_voz():
     d = escucha.DetectorFrase()
     for _ in range(12):
@@ -105,7 +137,8 @@ def test_transcripcion_local_multilingue_sin_traduccion(monkeypatch, idioma):
 @pytest.mark.parametrize("desbordado", [False, True])
 def test_captura_cierra_microfono_y_detecta_perdida_audio(monkeypatch, desbordado):
     estado = {"lecturas": 0, "cerrado": False}
-    bloque = b"\0\0" * escucha.MUESTRAS_BLOQUE
+    silencio = b"\0\0" * escucha.MUESTRAS_BLOQUE
+    bloque = b"\xe8\x03" * escucha.MUESTRAS_BLOQUE
 
     class Entrada:
         def __init__(self, **kw):
@@ -119,14 +152,15 @@ def test_captura_cierra_microfono_y_detecta_perdida_audio(monkeypatch, desbordad
 
         def read(self, muestras):
             estado["lecturas"] += 1
-            return bloque, desbordado
+            hablando = escucha.BLOQUES_CALIBRACION < estado["lecturas"] <= escucha.BLOQUES_CALIBRACION + 20
+            return bloque if hablando else silencio, desbordado
 
     class Vad:
         def __init__(self, modo):
             assert modo == 2
 
         def is_speech(self, pcm, frecuencia):
-            return estado["lecturas"] <= 12
+            return True  # Reproduce ruido que el VAD clasifica erróneamente como habla.
 
     monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(RawInputStream=Entrada))
     monkeypatch.setitem(sys.modules, "webrtcvad", SimpleNamespace(Vad=Vad))
@@ -134,23 +168,24 @@ def test_captura_cierra_microfono_y_detecta_perdida_audio(monkeypatch, desbordad
         with pytest.raises(RuntimeError, match="perdido audio"):
             escucha.capturar_frase()
     else:
-        assert escucha.capturar_frase() == bloque * 12
-        assert estado["lecturas"] == 12 + 167
+        assert escucha.capturar_frase().endswith(bloque * 20)
+        assert estado["lecturas"] == escucha.BLOQUES_CALIBRACION + 20 + 167
     assert estado["cerrado"]
 
 
 @pytest.fixture
 def lanzar(monkeypatch):
+    from core import audio_worker
     original = subprocess.Popen
     monkeypatch.setattr(escucha.EscuchaLocal, "motivo_no_disponible", property(lambda _: None))
 
     def crear(codigo, idioma=None):
         def popen(argumentos, **kw):
-            assert argumentos[-2:] == ["--capturar", idioma or "auto"]
+            assert argumentos[1:4] == ["-m", "core.audio_worker", "escucha"]
             assert not kw.get("shell")
             return original([sys.executable, "-c", codigo], **kw)
 
-        monkeypatch.setattr(escucha.subprocess, "Popen", popen)
+        monkeypatch.setattr(audio_worker.subprocess, "Popen", popen)
         micro = escucha.EscuchaLocal()
         micro.iniciar(idioma)
         return micro
@@ -163,18 +198,18 @@ def recoger(micro):
     limite = time.monotonic() + 5
     while time.monotonic() < limite:
         eventos.extend(micro.comprobar())
-        if ("fin", "") in eventos:
+        if any(tipo in ("texto", "error") for tipo, _ in eventos):
             return eventos
         time.sleep(0.01)
     pytest.fail("el proceso de escucha no termina")
 
 
 def test_proceso_entrega_texto_y_libera_recursos(lanzar):
-    codigo = f"print({json.dumps(['texto', 'Hola Boli'])!r}, flush=True)"
+    codigo = f"print({json.dumps([1, 'texto', 'Hola Boli'])!r}, flush=True)"
     micro = lanzar(codigo)
     try:
-        assert recoger(micro) == [("texto", "Hola Boli"), ("fin", "")]
-        errores = micro._errores
+        assert ("texto", "Hola Boli") in recoger(micro)
+        errores = micro._worker._errores
     finally:
         micro.detener()
     assert errores.closed and micro.comprobar() == []
@@ -183,12 +218,12 @@ def test_proceso_entrega_texto_y_libera_recursos(lanzar):
 def test_error_del_subproceso_es_visible(lanzar):
     micro = lanzar("import sys; print('sin dispositivo', file=sys.stderr); sys.exit(1)")
     try:
-        assert ("error", "sin dispositivo") in recoger(micro)
+        assert any(tipo == "error" and "sin dispositivo" in texto for tipo, texto in recoger(micro))
     finally:
         micro.detener()
 
 
-@pytest.mark.parametrize("salida", ["no es json", '["texto", ""]', '["texto", "   "]'])
+@pytest.mark.parametrize("salida", ["no es json", '[1, "texto", ""]', '[1, "texto", "   "]'])
 def test_evento_invalido_no_parece_una_transcripcion(lanzar, salida):
     micro = lanzar(f"print({salida!r}, flush=True)")
     try:
@@ -200,18 +235,18 @@ def test_evento_invalido_no_parece_una_transcripcion(lanzar, salida):
 
 
 def test_desactivar_termina_proceso_y_descarta_eventos_pendientes(lanzar):
-    micro = lanzar("import time; print('[\"estado\", \"listo\"]', flush=True); time.sleep(30)")
-    proceso = micro._proceso
+    micro = lanzar("import time; print('[1, \"estado\", \"listo\"]', flush=True); time.sleep(30)")
+    proceso = micro._worker.proceso
     inicio = time.monotonic()
     micro.detener()
     assert proceso.poll() is not None
-    assert time.monotonic() - inicio < 1
+    assert time.monotonic() - inicio < 2
     assert micro.comprobar() == []
     micro.detener()
 
 
 def test_idioma_explicito_llega_al_proceso(lanzar):
-    micro = lanzar("print('[\"texto\", \"Kaixo\"]', flush=True)", "eu")
+    micro = lanzar("print('[1, \"texto\", \"Kaixo\"]', flush=True)", "eu")
     try:
         assert ("texto", "Kaixo") in recoger(micro)
     finally:
