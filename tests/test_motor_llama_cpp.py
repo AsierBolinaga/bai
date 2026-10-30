@@ -1,4 +1,6 @@
 """Motor offline llama.cpp (core/motors/llama_cpp_engine.py) con librería simulada."""
+import types
+
 import pytest
 
 from core.motors import llama_cpp_engine as motor
@@ -163,3 +165,82 @@ def test_regresion_adaptador_consolida_los_mensajes_de_sistema(llama_fake, model
     for fragmento in ("Eres B.A.I", "furgoneta camper", "idioma del usuario"):
         assert fragmento in enviados[0]["content"]
     assert [m["content"] for m in enviados[1:]] == ["hola", "buenas", "¿cómo se llama mi vehículo?"]
+
+
+def test_presupuesto_recorta_antes_de_generar_y_no_muta(llama_fake, modelo_tmp):
+    from core.contexto import estimar_tokens
+    msgs = [{"role": "system", "content": "identidad y memoria"},
+            {"role": "user", "content": "viejo " * 1000},
+            {"role": "assistant", "content": "respuesta vieja"},
+            {"role": "user", "content": "pregunta actual"}]
+    with pytest.warns(UserWarning, match="Contexto ajustado"):
+        motor.responder(msgs, {"model_path": modelo_tmp, "n_ctx": 512, "max_tokens": 64})
+    enviados = llama_fake.instancias[0].llamadas[0]["messages"]
+    assert enviados == [msgs[0], msgs[-1]] and len(msgs) == 4
+    assert estimar_tokens(enviados) + 64 <= 512
+
+
+def test_pregunta_excesiva_no_invoca_inferencia(llama_fake, modelo_tmp):
+    with pytest.raises(MotorError, match="Contexto insuficiente"):
+        motor.responder([{"role": "user", "content": "x" * 2048}],
+                        {"model_path": modelo_tmp})
+    assert llama_fake.instancias == []
+
+
+def test_cache_no_reutiliza_ventana_distinta(llama_fake, modelo_tmp):
+    motor.responder(mensajes_basicos(), {"model_path": modelo_tmp, "n_ctx": 2048})
+    motor.responder(mensajes_basicos(), {"model_path": modelo_tmp, "n_ctx": 4096})
+    assert [m.kwargs["n_ctx"] for m in llama_fake.instancias] == [2048, 4096]
+
+
+def test_fallback_recalcula_con_historial_original(llama_fake, modelo_tmp):
+    from core.model_selector import ModelSelector
+    from tests.conftest import config_base
+    cfg = config_base()
+    cfg["offline"]["motores"] = {
+        nombre: {"model_path": modelo_tmp, "n_ctx": limite, "max_tokens": 64}
+        for nombre, limite in (("off_a", 512), ("off_b", 4096))}
+    msgs = mensajes_basicos("actual")
+    msgs[1:1] = [{"role": "user", "content": "viejo" * 200},
+                 {"role": "assistant", "content": "respuesta vieja"}]
+    modulo = types.SimpleNamespace(TIPO="offline", disponible=motor.disponible)
+
+    def responder(mensajes, config):
+        texto = motor.responder(mensajes, config)
+        if config["n_ctx"] == 512:
+            raise MotorError("fallo simulado después de recortar")
+        return texto
+
+    modulo.responder = responder
+    sel = ModelSelector(config=cfg, obtener_motor=lambda nombre: modulo)
+    try:
+        with pytest.warns(UserWarning, match="Contexto ajustado"):
+            respuesta = sel.responder(msgs)
+        assert respuesta.motor == "off_b" and respuesta.fallback_usado
+        assert llama_fake.instancias[1].llamadas[0]["messages"] == msgs
+        assert len(msgs) == 4
+    finally:
+        sel.cerrar()
+
+
+def test_ask_avisa_del_recorte_sin_borrar_historial(llama_fake, modelo_tmp,
+                                                   ai_engine_aislado, monkeypatch):
+    from core.model_selector import ModelSelector
+    from tests.conftest import config_base
+    ai = ai_engine_aislado
+    cfg = config_base()
+    cfg["offline"]["fallback"] = []
+    cfg["offline"]["motores"] = {"off_a": {
+        "model_path": modelo_tmp, "n_ctx": 2048, "max_tokens": 256}}
+    sel = ModelSelector(config=cfg, obtener_motor=lambda nombre: motor)
+    ai.set_selector(sel)
+    avisos = []
+    monkeypatch.setattr(ai, "_avisador", avisos.append)
+    historial = [{"role": "user", "content": "viejo" * 1000},
+                 {"role": "assistant", "content": "respuesta vieja"}]
+    try:
+        assert ai.ask("pregunta actual", historial) == "respuesta local"
+        assert len(historial) == 4 and historial[0]["content"] == "viejo" * 1000
+        assert any("Contexto ajustado" in aviso for aviso in avisos)
+    finally:
+        sel.cerrar()

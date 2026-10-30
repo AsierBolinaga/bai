@@ -8,6 +8,7 @@ import atexit
 from time import time
 
 from config.motors_config import resolver_ruta
+from core.contexto import ajustar_contexto
 from core.motors.base import (MotorError, MotorNoDisponible, consolidar_sistema, libreria_instalada,
                               validar_gguf, validar_mensajes)
 
@@ -20,7 +21,7 @@ TEMPERATURE_POR_DEFECTO = 0.7
 CHAT_FORMAT_POR_DEFECTO = "llama-2"
 STOP_POR_DEFECTO = ["</s>", "###"]
 
-_modelos = {}  # model_path -> instancia Llama
+_modelos = {}  # (model_path, n_ctx, chat_format) -> instancia Llama
 
 
 def liberar_modelos():
@@ -59,8 +60,9 @@ def cargar_modelo(config):
         raise MotorNoDisponible(motivo)
 
     ruta = _ruta_modelo(config)
-    if ruta in _modelos:
-        return _modelos[ruta]
+    clave = (ruta, config.get("n_ctx", N_CTX_POR_DEFECTO), config.get("chat_format", CHAT_FORMAT_POR_DEFECTO))
+    if clave in _modelos:
+        return _modelos[clave]
 
     try:
         from llama_cpp import Llama
@@ -80,19 +82,21 @@ def cargar_modelo(config):
         raise MotorError(f"Error al cargar el modelo llama.cpp: {e}") from e
 
     print("[B.A.I] Modelo cargado correctamente.")
-    _modelos[ruta] = modelo
+    _modelos[clave] = modelo
     return modelo
 
 
 def responder(messages, config):
     validar_mensajes(messages)
     config = config or {}
-    modelo = cargar_modelo(config)
 
     # Los formateadores de llama-cpp-python (llama-2, chatml, ...) sólo leen el
     # PRIMER mensaje de sistema: sin consolidar se perderían la memoria personal
     # y la instrucción de idioma que ai_engine añade como mensajes 'system'.
-    mensajes = consolidar_sistema(messages)
+    mensajes = ajustar_contexto(
+        consolidar_sistema(messages), config.get("n_ctx", N_CTX_POR_DEFECTO),
+        config.get("max_tokens", MAX_TOKENS_POR_DEFECTO))
+    modelo = cargar_modelo(config)
 
     inicio = time()
     try:

@@ -10,6 +10,7 @@ offline sin credenciales.
 import os
 
 from dotenv import load_dotenv
+from core.contexto import ajustar_contexto
 
 from core.motors.base import MotorError, MotorNoDisponible, libreria_instalada, validar_mensajes
 
@@ -21,6 +22,7 @@ ENV_API_KEY = "OPENAI_API_KEY"
 MODELO_POR_DEFECTO = "gpt-4o"
 TEMPERATURE_POR_DEFECTO = 0.5
 MAX_TOKENS_POR_DEFECTO = 1024
+N_CTX_POR_DEFECTO = 4096
 
 _clientes = {}
 
@@ -55,6 +57,8 @@ def responder(messages, config):
     validar_mensajes(messages)
     config = config or {}
     modelo = config.get("modelo", MODELO_POR_DEFECTO)
+    messages = ajustar_contexto(messages, config.get("n_ctx", N_CTX_POR_DEFECTO),
+                                config.get("max_tokens", MAX_TOKENS_POR_DEFECTO))
     try:
         response = _cliente().chat.completions.create(
             model=modelo,

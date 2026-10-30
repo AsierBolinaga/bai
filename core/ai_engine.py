@@ -6,6 +6,7 @@ modelo según el modo de trabajo (online / offline).
 import re
 
 from core.ayuda import AYUDA_BAI, es_peticion_ayuda
+from core.contexto import avisos_contexto
 from config.motors_config import PROJECT_ROOT
 from core.memory_commands import procesar_comando_memoria
 from core.memory_engine import get_memory_context
@@ -202,7 +203,8 @@ def ask(user_input, chat_history, selector=None):
     mensajes = construir_mensajes(user_input, chat_history)
 
     try:
-        respuesta = selector.responder(mensajes, prioridad=prioridad_turno)
+        with avisos_contexto(_avisador):
+            respuesta = selector.responder(mensajes, prioridad=prioridad_turno)
     except SinMotorDisponible as e:
         # Turno fallido: ni historial ni memoria se modifican, y el modo no cambia.
         detalle = "\n".join(f"  - {motor}: {motivo}" for motor, motivo in e.errores)

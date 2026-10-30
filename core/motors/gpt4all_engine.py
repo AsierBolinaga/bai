@@ -8,6 +8,7 @@ forma perezosa y se cachea por ruta.
 import os
 
 from config.motors_config import resolver_ruta
+from core.contexto import ajustar_contexto
 from core.motors.base import (MotorError, MotorNoDisponible, libreria_instalada, mensajes_a_prompt,
                               separar_sistema, validar_gguf, validar_mensajes)
 
@@ -15,12 +16,13 @@ NOMBRE = "gpt4all"
 TIPO = "offline"
 
 N_CTX_POR_DEFECTO = 2048
+MAX_TOKENS_POR_DEFECTO = 200
 # Plantilla de prompt para modelos Llama-2 / Mistral-Instruct ({0} = mensaje del usuario).
 # Sin allow_download GPT4All no puede consultar la plantilla del modelo en
 # gpt4all.io, así que se indica explícitamente (configurable con 'prompt_template').
 PROMPT_TEMPLATE_POR_DEFECTO = "[INST] {0} [/INST]"
 
-_modelos = {}  # model_path -> instancia GPT4All
+_modelos = {}  # (model_path, n_ctx) -> instancia GPT4All
 
 
 def _ruta_modelo(config):
@@ -47,8 +49,9 @@ def cargar_modelo(config):
         raise MotorNoDisponible(motivo)
 
     ruta = _ruta_modelo(config)
-    if ruta in _modelos:
-        return _modelos[ruta]
+    clave = (ruta, config.get("n_ctx", N_CTX_POR_DEFECTO))
+    if clave in _modelos:
+        return _modelos[clave]
 
     try:
         from gpt4all import GPT4All
@@ -73,22 +76,32 @@ def cargar_modelo(config):
     except Exception as e:
         raise MotorError(f"Error al cargar el modelo GPT4All: {e}") from e
 
-    _modelos[ruta] = modelo
+    _modelos[clave] = modelo
     return modelo
 
 
 def responder(messages, config):
     validar_mensajes(messages)
     config = config or {}
+    plantilla = config.get("prompt_template", PROMPT_TEMPLATE_POR_DEFECTO)
+
+    def contar(mensajes):
+        sistema, turnos = separar_sistema(mensajes)
+        try:
+            formateado = plantilla.format(mensajes_a_prompt(turnos))
+        except (ValueError, KeyError, IndexError) as error:
+            raise MotorError(f"prompt_template inválido: {error}") from error
+        return len((sistema + "\n\n" + formateado).encode("utf-8")) + 64
+
+    messages = ajustar_contexto(messages, config.get("n_ctx", N_CTX_POR_DEFECTO),
+                                config.get("max_tokens", MAX_TOKENS_POR_DEFECTO), contar)
     modelo = cargar_modelo(config)
 
     sistema, turnos = separar_sistema(messages)
     # El historial (user/assistant) se aplana en texto; el sistema va aparte.
     prompt = mensajes_a_prompt(turnos) if turnos else ""
 
-    kwargs = {}
-    if "max_tokens" in config:
-        kwargs["max_tokens"] = config["max_tokens"]
+    kwargs = {"max_tokens": config.get("max_tokens", MAX_TOKENS_POR_DEFECTO)}
     if "temperature" in config:
         kwargs["temp"] = config["temperature"]
 

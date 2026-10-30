@@ -110,3 +110,23 @@ def test_mensajes_invalidos(openai_fake, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     with pytest.raises(ValueError):
         motor.responder("texto plano", {})
+
+
+def test_recorte_usa_presupuesto_online_y_no_modifica_historial(openai_fake, monkeypatch):
+    from core.contexto import estimar_tokens
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    msgs = [{"role": "system", "content": "identidad"},
+            {"role": "user", "content": "viejo " * 1000},
+            {"role": "assistant", "content": "respuesta vieja"},
+            {"role": "user", "content": "actual"}]
+    with pytest.warns(UserWarning, match="Contexto ajustado"):
+        motor.responder(msgs, {"n_ctx": 512, "max_tokens": 64})
+    enviados = openai_fake.instancias[0].llamadas[0]["messages"]
+    assert enviados == [msgs[0], msgs[-1]] and len(msgs) == 4
+    assert estimar_tokens(enviados) + 64 <= 512
+
+
+def test_exceso_obligatorio_no_contacta_api(openai_fake):
+    with pytest.raises(MotorError, match="Contexto insuficiente"):
+        motor.responder([{"role": "user", "content": "x" * 5000}], {})
+    assert openai_fake.instancias == []

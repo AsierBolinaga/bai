@@ -45,6 +45,8 @@ online:
   motores:
     openai:
       modelo: gpt-4o
+      # Ventana total del modelo: entrada + reserva de respuesta. Ajustar si cambia el modelo.
+      n_ctx: 128000
       temperature: 0.5
       max_tokens: 1024
       # Host usado para comprobar la conectividad antes de llamar a la API
@@ -71,6 +73,7 @@ offline:
     gpt4all:
       model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
       n_ctx: 2048
+      max_tokens: 200
       # NOTA: GPT4All se ejecuta siempre con allow_download=False. Un valor
       # "allow_download: true" aquí se ignora (los motores offline nunca
       # contactan con gpt4all.io ni con ningún otro servicio externo).

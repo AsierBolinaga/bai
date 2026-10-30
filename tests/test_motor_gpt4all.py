@@ -84,7 +84,7 @@ def test_responder_separa_sistema_y_aplana_turnos(gpt4all_fake, modelo_tmp):
 def test_responder_sin_sistema(gpt4all_fake, modelo_tmp):
     motor.responder([{"role": "user", "content": "hola"}], {"model_path": str(modelo_tmp)})
     g = gpt4all_fake.instancias[0]
-    assert g.sesiones == [None] and g.generaciones[0][1] == {}
+    assert g.sesiones == [None] and g.generaciones[0][1] == {"max_tokens": 200}
 
 
 def test_cache_y_errores(gpt4all_fake, modelo_tmp, tmp_path):
@@ -130,3 +130,33 @@ def test_prompt_template_configurable(gpt4all_fake, modelo_tmp):
     motor.responder([{"role": "user", "content": "hola"}],
                     {"model_path": str(modelo_tmp), "prompt_template": "### Human:\n{0}\n### Assistant:\n"})
     assert gpt4all_fake.instancias[0].plantillas == ["### Human:\n{0}\n### Assistant:\n"]
+
+
+def test_contexto_incluye_sistema_plantilla_y_reserva(gpt4all_fake, modelo_tmp):
+    msgs = [{"role": "system", "content": "memoria"},
+            {"role": "user", "content": "antiguo" * 200},
+            {"role": "assistant", "content": "respuesta"},
+            {"role": "user", "content": "actual"}]
+    plantilla = "INICIO " * 20 + "{0} FIN"
+    with pytest.warns(UserWarning, match="Contexto ajustado"):
+        motor.responder(msgs, {"model_path": str(modelo_tmp), "n_ctx": 512,
+                              "max_tokens": 64, "prompt_template": plantilla})
+    instancia = gpt4all_fake.instancias[0]
+    prompt, opciones = instancia.generaciones[0]
+    assert "antiguo" not in prompt and "actual" in prompt
+    assert instancia.sesiones == ["memoria"] and opciones["max_tokens"] == 64
+    assert len(("memoria\n\n" + plantilla.format(prompt)).encode("utf-8")) + 64 + 64 <= 512
+
+
+def test_plantilla_excesiva_no_llega_a_generar(gpt4all_fake, modelo_tmp):
+    with pytest.raises(MotorError, match="Contexto insuficiente"):
+        motor.responder([{"role": "user", "content": "hola"}],
+                        {"model_path": str(modelo_tmp), "prompt_template": "x" * 3000 + "{0}"})
+    assert gpt4all_fake.instancias == []
+
+
+def test_cache_gpt4all_respeta_n_ctx(gpt4all_fake, modelo_tmp):
+    for limite in (2048, 4096):
+        motor.responder([{"role": "user", "content": "hola"}],
+                        {"model_path": str(modelo_tmp), "n_ctx": limite})
+    assert [g.kwargs["n_ctx"] for g in gpt4all_fake.instancias] == [2048, 4096]

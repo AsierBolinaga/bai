@@ -24,6 +24,23 @@ def test_config_real_del_proyecto_es_valida():
     assert cfg["offline"]["motores"]["llama_cpp"]["model_path"].endswith(".gguf")
 
 
+@pytest.mark.parametrize("campo", ["n_ctx", "max_tokens"])
+@pytest.mark.parametrize("valor", [0, -1, True, False, "2048", 2.5, None])
+def test_limites_de_contexto_invalidos(tmp_path, campo, valor):
+    p = escribir(tmp_path, {"offline": {"motor": "llama_cpp", "motores": {
+        "llama_cpp": {campo: valor}}}})
+    with pytest.raises(mc.ConfigError, match=campo):
+        mc.cargar_motors_config(p)
+
+
+@pytest.mark.parametrize("reserva", [256, 512])
+def test_reserva_debe_dejar_espacio_de_entrada(tmp_path, reserva):
+    p = escribir(tmp_path, {"offline": {"motor": "llama_cpp", "motores": {
+        "llama_cpp": {"n_ctx": 256, "max_tokens": reserva}}}})
+    with pytest.raises(mc.ConfigError, match="menor que n_ctx"):
+        mc.cargar_motors_config(p)
+
+
 def test_motors_config_module_level_compatibilidad():
     assert mc.motors_config["offline"]["motor"] == "llama_cpp"
 

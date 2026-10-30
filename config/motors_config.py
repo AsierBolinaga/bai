@@ -149,6 +149,15 @@ def validar_config(config):
         mx = seccion.get("max_mensajes_contexto")
         if mx is not None and (not isinstance(mx, int) or mx <= 0):
             raise ConfigError(f"'{nombre}.max_mensajes_contexto' debe ser entero > 0.")
+        for identificador, opciones in seccion["motores"].items():
+            for campo in ("n_ctx", "max_tokens"):
+                if campo in opciones:
+                    valor = opciones[campo]
+                    if isinstance(valor, bool) or not isinstance(valor, int) or valor <= 0:
+                        raise ConfigError(f"'{nombre}.motores.{identificador}.{campo}' debe ser entero > 0.")
+            if "n_ctx" in opciones and "max_tokens" in opciones:
+                if opciones["max_tokens"] >= opciones["n_ctx"]:
+                    raise ConfigError(f"'{nombre}.motores.{identificador}': max_tokens debe ser menor que n_ctx.")
 
     prioridad = str(config["online"].get("prioridad", "local")).lower()
     if prioridad not in PRIORIDADES_VALIDAS:

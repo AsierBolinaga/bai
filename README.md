@@ -402,6 +402,7 @@ online:
   motores:
     openai:
       modelo: gpt-4o
+      n_ctx: 128000
       temperature: 0.5
       max_tokens: 1024
 
@@ -413,12 +414,41 @@ offline:
     llama_cpp:
       model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
       n_ctx: 2048
+      max_tokens: 256
     gpt4all:
       model_path: models/mistral-7b-instruct-v0.1.Q4_0.gguf
+      n_ctx: 2048
+      max_tokens: 200
 ```
 
 Relative paths are resolved from the project root. The old flat format
 (`motor_offline` / `model_path` / `ruta_modelo`) is still accepted.
+
+### Context budget
+
+The llama.cpp, GPT4All and OpenAI adapters reserve `max_tokens` for the answer
+inside `n_ctx`. The input budget is therefore `n_ctx - max_tokens`; both values
+must be positive integers, with `max_tokens < n_ctx`.
+If unspecified, the adapters use `n_ctx=2048` / `max_tokens=256` for llama.cpp,
+`2048` / `200` for GPT4All, and a conservative local budget of `4096` / `1024`
+for OpenAI. Set these explicitly to match the actual model's supported window;
+increasing a configuration value does not increase a model's capabilities.
+
+After the existing message-count cap, adapters estimate input size conservatively:
+one unit per UTF-8 byte plus formatting margins (not the usual characters/4
+heuristic). GPT4All includes the configured prompt template in that estimate.
+This needs no tokenizer download, but **is not an exact model-token count or a
+universal guarantee for arbitrary chat templates**. It may discard history sooner
+than necessary; a backend can still reject a request if its actual formatting
+requires more space.
+
+When needed, the oldest conversation turns are omitted first, with a notice in
+the CLI/UI. System instructions, memory and the latest question are never
+truncated. The original conversation and persisted facts are not deleted.
+If the mandatory content alone does not fit, the adapter reports an explicit
+error before generation instead of silently cutting the question or memory.
+Each fallback recomputes its own budget from the original candidate messages.
+Existing fallback and online-authorization rules remain unchanged.
 
 ---
 
